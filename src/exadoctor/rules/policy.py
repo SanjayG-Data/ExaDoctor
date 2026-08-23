@@ -37,6 +37,13 @@ class RulePolicy:
     # duration" framing SQL-FAIL-001/PERF-BOTTLENECK-001 already use, applied
     # to EXA_DBA_TRANSACTION_CONFLICTS instead of profile parts.
     transaction_conflict_share_threshold: float = 1.0
+    # Inclusion bar for SQL-COMMAND-SHARE-001's per-command-name ranking: a
+    # command_name is worth naming if it accounts for at least this share of
+    # total workload duration OR total CPU-seconds, whichever comes first --
+    # matches the two concrete numbers found in the legacy ikar4us tool's own
+    # ranking query (duration_sum_% > 0.5 or cpu_sum_% > 1.0).
+    command_share_duration_threshold_percent: float = 0.5
+    command_share_cpu_threshold_percent: float = 1.0
 
 
 DEFAULT_POLICY = RulePolicy()

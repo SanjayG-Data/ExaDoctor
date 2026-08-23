@@ -20,6 +20,7 @@ from rules_helpers import (
 from exadoctor.models.finding import FindingStatus
 from exadoctor.rules.policy import DEFAULT_POLICY
 from exadoctor.rules.public_core import (
+    evaluate_command_share,
     evaluate_ram_sizing,
     evaluate_session_long,
     evaluate_sql_fail,
@@ -291,6 +292,77 @@ def test_sql_remote_reports_info_not_warning_when_remote_reads_present():
     snapshot = make_snapshot(workload=CollectionResult("EXA_SQL_LAST_DAY", "PUBLIC", True, None, rows))
     findings = evaluate_sql_remote(snapshot, DEFAULT_POLICY)
     assert findings[0].status == FindingStatus.INFO  # never automatically a fault
+
+
+# ---- SQL-COMMAND-SHARE-001 -------------------------------------------------
+
+
+def test_command_share_not_evaluated_when_workload_unavailable():
+    snapshot = make_snapshot(workload=unavailable_workload())
+    findings = evaluate_command_share(snapshot, DEFAULT_POLICY)
+    assert findings[0].status == FindingStatus.NOT_EVALUATED
+
+
+def test_command_share_passes_with_no_workload_activity():
+    snapshot = make_snapshot()  # defaults to available, empty
+    findings = evaluate_command_share(snapshot, DEFAULT_POLICY)
+    assert findings[0].status == FindingStatus.PASS
+
+
+def test_command_share_passes_when_spread_evenly_across_many_commands():
+    from exadoctor.collectors.models import CollectionResult
+
+    # 10 distinct command types, one statement each, identical duration/CPU
+    # -- each is exactly 10% of the total, comfortably under both default
+    # thresholds only because there are enough distinct types to dilute any
+    # one of them... actually 10% would clear a 0.5%/1.0% threshold, so use
+    # enough distinct types that no single one reaches either bar.
+    rows = [
+        sql_statement(1, i, command_name=f"CMD_{i}", duration_seconds=1.0, cpu_percent=1.0)
+        for i in range(300)
+    ]
+    snapshot = make_snapshot(workload=CollectionResult("EXA_SQL_LAST_DAY", "PUBLIC", True, None, rows))
+    findings = evaluate_command_share(snapshot, DEFAULT_POLICY)
+    assert findings[0].status == FindingStatus.PASS
+
+
+def test_command_share_reports_dominant_command_by_duration():
+    from exadoctor.collectors.models import CollectionResult
+
+    rows = [sql_statement(1, 1, command_name="SELECT", duration_seconds=99.0, cpu_percent=1.0)]
+    rows += [sql_statement(1, i, command_name="COMMIT", duration_seconds=0.01, cpu_percent=1.0) for i in range(2, 5)]
+    snapshot = make_snapshot(workload=CollectionResult("EXA_SQL_LAST_DAY", "PUBLIC", True, None, rows))
+    findings = evaluate_command_share(snapshot, DEFAULT_POLICY)
+    assert findings[0].status == FindingStatus.INFO
+    assert "SELECT" in findings[0].summary
+
+
+def test_command_share_reports_command_that_clears_only_the_cpu_threshold():
+    from exadoctor.collectors.models import CollectionResult
+
+    # ROLLBACK: tiny duration share but pegs CPU the whole time it runs --
+    # clears the CPU threshold (>=1.0%) while its duration share stays far
+    # below the 0.5% duration threshold, exercising the OR (not AND) logic.
+    rows = [sql_statement(1, 1, command_name="ROLLBACK", duration_seconds=0.001, cpu_percent=100.0)]
+    rows += [sql_statement(1, i, command_name="SELECT", duration_seconds=100.0, cpu_percent=0.0) for i in range(2, 5)]
+    snapshot = make_snapshot(workload=CollectionResult("EXA_SQL_LAST_DAY", "PUBLIC", True, None, rows))
+    findings = evaluate_command_share(snapshot, DEFAULT_POLICY)
+    assert findings[0].status == FindingStatus.INFO
+    assert "ROLLBACK" in findings[0].summary
+
+
+def test_command_share_cpu_seconds_not_a_naive_percentage_sum():
+    from exadoctor.collectors.models import CollectionResult
+
+    # Two SELECTs at 50% CPU for 10s each = 10 CPU-seconds combined (5+5),
+    # not "100%" from naively summing the raw percentages -- this is the
+    # correctness fix over the legacy tool's own approach.
+    rows = [sql_statement(1, i, command_name="SELECT", duration_seconds=10.0, cpu_percent=50.0) for i in (1, 2)]
+    snapshot = make_snapshot(workload=CollectionResult("EXA_SQL_LAST_DAY", "PUBLIC", True, None, rows))
+    findings = evaluate_command_share(snapshot, DEFAULT_POLICY)
+    # 2 statements * 50% CPU * 10s = 10.0 CPU-seconds total, not 100.0
+    # (which a naive sum of the raw CPU% values would have produced).
+    assert "10.0 total CPU-seconds" in findings[0].evidence[0].context
 
 
 # ---- SQL-CONFLICT-001 -----------------------------------------------------

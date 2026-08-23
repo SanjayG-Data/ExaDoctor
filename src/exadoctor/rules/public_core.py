@@ -479,6 +479,145 @@ def evaluate_sql_remote(snapshot: Snapshot, policy: RulePolicy) -> list[Finding]
     ]
 
 
+def evaluate_command_share(snapshot: Snapshot, policy: RulePolicy) -> list[Finding]:
+    """Reports which COMMAND_NAME(s) dominate total workload time/CPU in the
+    window -- a workload-*composition* view, distinct from SQL-SLOW-001's
+    per-statement outlier detection (a command_name can dominate the total
+    without any single statement of that type being an outlier, e.g. many
+    unremarkable SELECTs simply outnumbering everything else).
+
+    Adapted from the legacy ikar4us tool's own ranking query, with one
+    deliberate correctness fix: EXA_SQL_LAST_DAY.CPU is documented as "CPU
+    usage as percentage of total system CPU resources available" -- an
+    instantaneous utilization reading, not a magnitude -- so summing it
+    directly across statements (as the legacy tool did) would let a command
+    class with many short, low-duration-but-momentarily-busy statements look
+    like it used more CPU than one with fewer, longer, steadily-busy
+    statements. CPU% * duration_seconds (a CPU-seconds proxy) is summed
+    instead, which is comparable regardless of how many statements make up
+    each group.
+
+    Always INFO, same as SQL-REMOTE-001: dominating the workload isn't
+    inherently a fault, just a composition fact worth knowing.
+    """
+    result = snapshot.workload
+    if not result.available:
+        return [
+            not_evaluated(
+                "SQL-COMMAND-SHARE-001",
+                "Workload composition by command",
+                "workload",
+                result.reason or "EXA_SQL_LAST_DAY unavailable",
+                requirements=["EXA_SQL_LAST_DAY"],
+            )
+        ]
+
+    items = [s for s in result.rows if s.duration_seconds is not None and s.command_name]
+    if not items:
+        return [
+            Finding(
+                id="SQL-COMMAND-SHARE-001",
+                title="No workload activity",
+                category="workload",
+                status=FindingStatus.PASS,
+                summary="No statements with a usable duration in the workload window.",
+                confidence="HIGH",
+                requirements=["EXA_SQL_LAST_DAY"],
+            )
+        ]
+
+    total_duration = sum(s.duration_seconds for s in items)
+    total_cpu_seconds = sum(
+        s.cpu_percent / 100 * s.duration_seconds for s in items if s.cpu_percent is not None
+    )
+
+    by_command: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0, 0])  # [duration, cpu_seconds, count]
+    for s in items:
+        stats = by_command[s.command_name]
+        stats[0] += s.duration_seconds
+        if s.cpu_percent is not None:
+            stats[1] += s.cpu_percent / 100 * s.duration_seconds
+        stats[2] += 1
+
+    contributors = []
+    for command_name, (duration, cpu_seconds, count) in by_command.items():
+        duration_share = (duration / total_duration * 100) if total_duration > 0 else 0.0
+        cpu_share = (cpu_seconds / total_cpu_seconds * 100) if total_cpu_seconds > 0 else 0.0
+        if (
+            duration_share >= policy.command_share_duration_threshold_percent
+            or cpu_share >= policy.command_share_cpu_threshold_percent
+        ):
+            contributors.append((command_name, duration, duration_share, cpu_seconds, cpu_share, count))
+
+    if not contributors:
+        return [
+            Finding(
+                id="SQL-COMMAND-SHARE-001",
+                title="No single command type dominates the workload",
+                category="workload",
+                status=FindingStatus.PASS,
+                summary=(
+                    f"No COMMAND_NAME reached {policy.command_share_duration_threshold_percent:g}% of total "
+                    f"duration or {policy.command_share_cpu_threshold_percent:g}% of total CPU-seconds across "
+                    f"{len(items)} statement(s) -- workload time is spread across many command types."
+                ),
+                confidence="MEDIUM",
+                requirements=["EXA_SQL_LAST_DAY"],
+                documentation=["ExaDoctor policy: share-of-total-duration/CPU threshold"],
+            )
+        ]
+
+    contributors.sort(key=lambda c: c[1], reverse=True)
+    top = contributors[: min(5, len(contributors))]
+    lines = [
+        f"{name} ({count} stmt(s)): {duration_share:.1f}% duration, {cpu_share:.1f}% CPU-seconds"
+        for name, duration, duration_share, cpu_seconds, cpu_share, count in top
+    ]
+    worst_name, worst_duration, worst_duration_share, worst_cpu_seconds, worst_cpu_share, worst_count = top[0]
+
+    return [
+        Finding(
+            id="SQL-COMMAND-SHARE-001",
+            title="Workload composition by command",
+            category="workload",
+            status=FindingStatus.INFO,
+            summary=(
+                f"{len(top)} of {len(by_command)} distinct command type(s) account for a meaningful share of "
+                f"the workload; top contributor is {worst_name} ({worst_count} stmt(s), "
+                f"{worst_duration_share:.1f}% of total duration, {worst_cpu_share:.1f}% of total CPU-seconds). "
+                + "; ".join(lines)
+            ),
+            evidence=[
+                Evidence(
+                    source="EXA_SQL_LAST_DAY",
+                    stability="PUBLIC",
+                    metric="DURATION/CPU",
+                    value=worst_duration,
+                    unit="seconds",
+                    timestamp=None,
+                    context=(
+                        f"{worst_name}: {worst_duration_share:.1f}% of {total_duration:.1f}s total duration, "
+                        f"{worst_cpu_share:.1f}% of {total_cpu_seconds:.1f} total CPU-seconds"
+                    ),
+                )
+            ],
+            recommendation=(
+                "Not inherently a fault -- this is workload composition, not an anomaly. Useful context when "
+                "planning capacity or investigating a slow window: which command types actually dominate "
+                "total time/CPU, as opposed to any single outlier statement (see SQL-SLOW-001)."
+            ),
+            confidence="MEDIUM",
+            requirements=["EXA_SQL_LAST_DAY"],
+            limitations=[
+                "CPU share is derived as CPU% * DURATION per statement (a CPU-seconds proxy), not a direct "
+                "Exasol-reported total -- EXA_SQL_LAST_DAY.CPU is an instantaneous utilization percentage, "
+                "not summable across statements on its own."
+            ],
+            documentation=["ExaDoctor policy: share-of-total-duration/CPU threshold"],
+        )
+    ]
+
+
 def evaluate_transaction_conflicts(snapshot: Snapshot, policy: RulePolicy) -> list[Finding]:
     """Reports lock/commit-wait contention from EXA_DBA_TRANSACTION_CONFLICTS
     -- registered in the capability probe since Milestone 0 but never read by
@@ -1156,6 +1295,7 @@ PUBLIC_CORE_RULES: list[Rule] = [
     Rule(id="SQL-SLOW-001", title="Duration outlier", category="workload", evaluate=evaluate_sql_slow),
     Rule(id="SQL-TEMP-001", title="TEMP-heavy statement outlier", category="workload", evaluate=evaluate_sql_temp),
     Rule(id="SQL-REMOTE-001", title="Remote-storage-heavy statement", category="workload", evaluate=evaluate_sql_remote),
+    Rule(id="SQL-COMMAND-SHARE-001", title="Workload composition by command", category="workload", evaluate=evaluate_command_share),
     Rule(id="SQL-CONFLICT-001", title="Transaction conflict contention", category="workload", evaluate=evaluate_transaction_conflicts),
     Rule(id="SYS-TEMP-001", title="TEMP usage anomaly", category="system", evaluate=evaluate_sys_temp),
     Rule(id="STORAGE-GROWTH-001", title="Unusual database growth", category="capacity", evaluate=evaluate_storage_growth),
