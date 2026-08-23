@@ -56,6 +56,22 @@ exadoctor scan
 - A reachable Exasol instance.
 - Nothing else — the installer takes care of any Python setup for you.
 
+### Updating
+
+Re-run the same install command:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/SanjayG-Data/ExaDoctor/main/install.sh | sh
+```
+
+It always re-pulls the latest commit and reinstalls, so this is also how
+you update. **`uv tool upgrade exadoctor` on its own is not reliable
+here** — verified live: it reports "Nothing to upgrade" even when there's
+a newer commit, because it doesn't check git history for a
+branch-tracking install (there's no version-number bump for it to
+notice). If you'd rather not re-run the installer, `uv tool upgrade
+exadoctor --reinstall` does correctly force a fresh pull.
+
 ## All commands
 
 ```
