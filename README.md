@@ -48,9 +48,6 @@ export EXADOCTOR_PASSWORD=...
 exadoctor scan
 ```
 
-*(The install URL above is a placeholder until this project is published
-somewhere reachable.)*
-
 ### Requirements
 
 - A reachable Exasol instance.
