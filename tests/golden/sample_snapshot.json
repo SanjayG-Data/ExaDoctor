@@ -1,0 +1,183 @@
+{
+  "schema_version": "0.1.0",
+  "database": {
+    "host": "localhost",
+    "port": 8564,
+    "version": "2026.1.0"
+  },
+  "collection_time": "2026-08-22T12:00:02+00:00",
+  "database_time": "2026-08-22T12:00:01.500000",
+  "capabilities": [
+    {
+      "id": "EXA_METADATA",
+      "available": true,
+      "reason": null,
+      "source": "\"SYS\".\"EXA_METADATA\"",
+      "stability": "PUBLIC",
+      "database_version": "2026.1.0",
+      "privilege_required": null,
+      "detected_columns": [
+        "PARAM_NAME",
+        "PARAM_VALUE"
+      ],
+      "missing_columns": [],
+      "data_available": true,
+      "detected_at": "2026-08-22T12:00:00+00:00"
+    }
+  ],
+  "metadata": {
+    "source_id": "EXA_METADATA",
+    "stability": "PUBLIC",
+    "available": true,
+    "reason": null,
+    "row_count": 1,
+    "collected_at": "2026-08-22T12:00:01+00:00",
+    "rows": [
+      {
+        "param_name": "databaseProductVersion",
+        "param_value": "2026.1.0"
+      }
+    ]
+  },
+  "parameters": {
+    "source_id": "EXA_PARAMETERS",
+    "stability": "PUBLIC",
+    "available": true,
+    "reason": null,
+    "row_count": 1,
+    "collected_at": "2026-08-22T13:09:42.404184+00:00",
+    "rows": [
+      {
+        "parameter_name": "NLS_DATE_FORMAT",
+        "session_value": "YYYY-MM-DD",
+        "system_value": "YYYY-MM-DD"
+      }
+    ]
+  },
+  "sessions": {
+    "source_id": "EXA_ALL_SESSIONS",
+    "stability": "PUBLIC",
+    "available": true,
+    "reason": null,
+    "row_count": 1,
+    "collected_at": "2026-08-22T13:09:42.404184+00:00",
+    "rows": [
+      {
+        "session_id": 4,
+        "user_name": "SYS",
+        "status": "IDLE",
+        "command_name": null,
+        "stmt_id": null,
+        "duration_seconds": 41.0,
+        "login_time": "2026-08-22T11:48:15.789000",
+        "temp_db_ram_mib": 66.9,
+        "persistent_db_ram_mib": 0.0,
+        "consumer_group": "SYS_CONSUMER_GROUP",
+        "cluster_name": "MAIN"
+      }
+    ]
+  },
+  "workload": {
+    "source_id": "EXA_SQL_LAST_DAY",
+    "stability": "PUBLIC",
+    "available": true,
+    "reason": null,
+    "row_count": 1,
+    "collected_at": "2026-08-22T13:09:42.404184+00:00",
+    "rows": [
+      {
+        "session_id": 1874035687682015232,
+        "stmt_id": 133,
+        "command_name": "ROLLBACK",
+        "command_class": "TRANSACTION",
+        "duration_seconds": 0.002,
+        "start_time": "2026-08-21T13:43:52.697000",
+        "stop_time": "2026-08-21T13:43:52.699000",
+        "cpu_percent": 4.5,
+        "temp_db_ram_peak_mib": 13.4,
+        "local_read_size_mib": 0.0,
+        "remote_read_size_mib": 0.0,
+        "net_mib_per_sec": 0.0,
+        "success": true,
+        "error_code": null,
+        "error_text": null,
+        "row_count": 0,
+        "cluster_name": "MAIN"
+      }
+    ]
+  },
+  "monitoring": {
+    "source_id": "EXA_MONITOR_LAST_DAY",
+    "stability": "PUBLIC",
+    "available": true,
+    "reason": null,
+    "row_count": 1,
+    "collected_at": "2026-08-22T13:09:42.404184+00:00",
+    "rows": [
+      {
+        "cluster_name": "MAIN",
+        "measure_time": "2026-08-21T13:00:00",
+        "load": 0.2,
+        "cpu_percent": 0.2,
+        "temp_db_ram_mib": 493.9,
+        "persistent_db_ram_mib": 0.0,
+        "net_mib_per_sec": 0.0,
+        "swap_mib_per_sec": 0.0
+      }
+    ]
+  },
+  "storage": {
+    "source_id": "EXA_DB_SIZE_DAILY",
+    "stability": "PUBLIC",
+    "available": true,
+    "reason": null,
+    "row_count": 0,
+    "collected_at": "2026-08-22T13:09:42.404184+00:00",
+    "rows": []
+  },
+  "usage": {
+    "source_id": "EXA_USAGE_LAST_DAY",
+    "stability": "PUBLIC",
+    "available": true,
+    "reason": null,
+    "row_count": 1,
+    "collected_at": "2026-08-22T13:09:42.404184+00:00",
+    "rows": [
+      {
+        "cluster_name": "MAIN",
+        "measure_time": "2026-08-21T13:00:00",
+        "users": 1,
+        "queries": 0
+      }
+    ]
+  },
+  "findings": [
+    {
+      "id": "SYS-SWAP-001",
+      "title": "Swap activity detected",
+      "category": "system",
+      "status": "WARNING",
+      "severity": "WARNING",
+      "summary": "Swap observed",
+      "evidence": [
+        {
+          "source": "EXA_MONITOR_LAST_DAY",
+          "stability": "PUBLIC",
+          "metric": "SWAP",
+          "value": 0.4,
+          "unit": "MiB/s",
+          "timestamp": "2026-08-21T13:41:30",
+          "context": null,
+          "session_id": null,
+          "stmt_id": null,
+          "part_id": null
+        }
+      ],
+      "recommendation": null,
+      "confidence": "MEDIUM",
+      "requirements": [],
+      "limitations": [],
+      "documentation": []
+    }
+  ]
+}

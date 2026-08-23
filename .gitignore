@@ -1,0 +1,37 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Test/tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local secrets/config
+.env
+.env.*
+
+# Local diagnostic data (the default baseline store lives outside the repo,
+# but EXADOCTOR_BASELINE_DB can be pointed at a path inside it)
+*.db
+*.sqlite3
+*.log
+
+# Editor/OS cruft
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Internal development diary -- detailed build/review history written for
+# development continuity, not meant for an external-facing repo. Kept
+# locally; never pushed.
+IMPLEMENTATION_STATUS.md
+IMPLEMENTATION_HISTORY.md

@@ -1,0 +1,27 @@
+[project]
+name = "exadoctor"
+version = "0.1.0"
+description = "Read-only diagnostic and workload-analysis CLI for Exasol"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Sanjay", email = "sanjay.gaudamchand@exasol.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "click>=8.4.2",
+    "pyexasol>=2.3.1",
+]
+
+[project.scripts]
+exadoctor = "exadoctor.cli.main:main"
+
+[build-system]
+requires = ["uv_build>=0.10.5,<0.11.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
