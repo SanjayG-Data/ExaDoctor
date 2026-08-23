@@ -16,6 +16,7 @@ from rules_helpers import (
 from exadoctor.models.finding import FindingStatus
 from exadoctor.rules.policy import DEFAULT_POLICY
 from exadoctor.rules.public_core import (
+    evaluate_ram_sizing,
     evaluate_session_long,
     evaluate_sql_fail,
     evaluate_sql_remote,
@@ -363,6 +364,39 @@ def test_storage_growth_warns_on_unusual_growth():
     snapshot = make_snapshot(storage=CollectionResult("EXA_DB_SIZE_DAILY", "PUBLIC", True, None, rows))
     findings = evaluate_storage_growth(snapshot, DEFAULT_POLICY)
     assert findings[0].status == FindingStatus.WARNING
+
+
+# ---- SYS-RAM-SIZING-001 ---------------------------------------------------
+
+
+def test_ram_sizing_not_evaluated_when_storage_unavailable():
+    snapshot = make_snapshot(storage=unavailable_storage())
+    findings = evaluate_ram_sizing(snapshot, DEFAULT_POLICY)
+    assert findings[0].status == FindingStatus.NOT_EVALUATED
+
+
+def test_ram_sizing_not_evaluated_when_no_row_has_the_value():
+    from exadoctor.collectors.models import CollectionResult
+
+    rows = [db_size_sample(DB_TIME, recommended_db_ram_size_avg_gib=None)]
+    snapshot = make_snapshot(storage=CollectionResult("EXA_DB_SIZE_DAILY", "PUBLIC", True, None, rows))
+    findings = evaluate_ram_sizing(snapshot, DEFAULT_POLICY)
+    assert findings[0].status == FindingStatus.NOT_EVALUATED
+
+
+def test_ram_sizing_reports_the_latest_recommendation_as_info():
+    from exadoctor.collectors.models import CollectionResult
+
+    rows = [
+        db_size_sample(DB_TIME - timedelta(days=1), recommended_db_ram_size_avg_gib=100.0),
+        db_size_sample(DB_TIME, recommended_db_ram_size_avg_gib=250.0),
+    ]
+    snapshot = make_snapshot(storage=CollectionResult("EXA_DB_SIZE_DAILY", "PUBLIC", True, None, rows))
+    findings = evaluate_ram_sizing(snapshot, DEFAULT_POLICY)
+    assert findings[0].status == FindingStatus.INFO
+    # Must report the *latest* row's value (250.0), not the first one (100.0).
+    assert findings[0].evidence[0].value == 250.0
+    assert "250.0 GiB" in findings[0].summary
 
 
 # ---- SESSION-LONG-001 -----------------------------------------------------

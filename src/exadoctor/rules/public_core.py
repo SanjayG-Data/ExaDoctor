@@ -392,12 +392,18 @@ def evaluate_sql_temp(snapshot: Snapshot, policy: RulePolicy) -> list[Finding]:
                 )
             ],
             recommendation=(
-                "Review the outlier statement(s) for large sorts/joins/aggregations spilling to TEMP; "
-                "consider indexing, filtering earlier, or splitting the statement."
+                "TEMP spillover for large sorts/joins/aggregations is expected Exasol behavior, not "
+                "inherently a fault -- per Exasol's docs, intermediate results that don't fit in DB RAM are "
+                "designed to spill to TEMP. Review the outlier statement(s) only if this pattern is "
+                "unexpected for this workload; if TEMP pressure shows up often, check the SYS-RAM-SIZING-001 "
+                "finding (Exasol's own recommended DB RAM) before assuming a per-query problem."
             ),
             confidence="MEDIUM",
             requirements=["EXA_SQL_LAST_DAY"],
-            limitations=["Outlier is relative to this workload window's own TEMP usage distribution, not an absolute capacity judgement."],
+            limitations=[
+                "Outlier is relative to this workload window's own TEMP usage distribution, not an absolute "
+                "capacity judgement -- see SYS-RAM-SIZING-001 for Exasol's own sizing recommendation."
+            ],
             documentation=["ExaDoctor policy: median-relative outlier factor"],
         )
     ]
@@ -546,7 +552,11 @@ def evaluate_sys_temp(snapshot: Snapshot, policy: RulePolicy) -> list[Finding]:
                         context=f"median={median:.1f} MiB n={len(samples)}",
                     )
                 ],
-                recommendation="Investigate what ran during the spike (correlate with EXA_SQL_LAST_DAY by time window).",
+                recommendation=(
+                    "A brief spike is often one large sort/join/aggregation temporarily spilling to TEMP -- "
+                    "expected Exasol behavior, not inherently a fault. Correlate with EXA_SQL_LAST_DAY by "
+                    "time window to see what ran; check SYS-RAM-SIZING-001 if spikes are frequent."
+                ),
                 confidence="MEDIUM",
                 requirements=["EXA_MONITOR_LAST_DAY"],
                 documentation=["ExaDoctor policy: median-relative spike factor"],
@@ -575,8 +585,10 @@ def evaluate_sys_temp(snapshot: Snapshot, policy: RulePolicy) -> list[Finding]:
                     )
                 ],
                 recommendation=(
-                    "Sustained (not just spiky) elevated TEMP usage may indicate persistent workload pressure "
-                    "rather than a one-off statement; review recurring heavy queries."
+                    "Sustained (not just spiky) elevated TEMP usage suggests persistent workload pressure "
+                    "rather than a one-off statement; review recurring heavy queries, and check "
+                    "SYS-RAM-SIZING-001 (Exasol's own recommended DB RAM) to see whether this cluster is "
+                    "sized for that pressure."
                 ),
                 confidence="MEDIUM",
                 requirements=["EXA_MONITOR_LAST_DAY"],
@@ -693,6 +705,93 @@ def evaluate_storage_growth(snapshot: Snapshot, policy: RulePolicy) -> list[Find
             requirements=["EXA_DB_SIZE_DAILY"],
             limitations=["Trend-relative to this instance's own recent history, not an absolute capacity judgement."],
             documentation=["ExaDoctor policy: relative growth threshold vs. trailing median"],
+        )
+    ]
+
+
+def evaluate_ram_sizing(snapshot: Snapshot, policy: RulePolicy) -> list[Finding]:
+    """Surfaces Exasol's own recommended DB RAM figure (`EXA_DB_SIZE_DAILY.
+    RECOMMENDED_DB_RAM_SIZE_AVG`) -- collected since Milestone 3 but never
+    read by any rule until now. Per Exasol's own sizing documentation
+    (https://docs.exasol.com/db/latest/administration/on-premise/sizing.htm),
+    this column is the documented way to check DB RAM sizing "if you have a
+    running system", and its formula already bakes in TEMP headroom (their
+    worked example uses 5% of compressed data volume) -- i.e. Exasol expects
+    some TEMP usage by design, not as an anomaly.
+
+    Always INFO, never a WARNING: ExaDoctor has no public source exposing
+    the cluster's actually provisioned DB RAM, so it cannot itself judge
+    whether this recommendation is being met -- only surface the number so
+    a human can compare it against what they know they provisioned. This
+    mirrors SQL-REMOTE-001's "always INFO, human judgement required" pattern.
+    """
+    result = snapshot.storage
+    if not result.available:
+        return [
+            not_evaluated(
+                "SYS-RAM-SIZING-001",
+                "Exasol-recommended DB RAM",
+                "capacity",
+                result.reason or "EXA_DB_SIZE_DAILY unavailable",
+                requirements=["EXA_DB_SIZE_DAILY"],
+            )
+        ]
+
+    rows = sorted(
+        (s for s in result.rows if s.recommended_db_ram_size_avg_gib is not None and s.interval_start is not None),
+        key=lambda s: s.interval_start,
+    )
+    if not rows:
+        return [
+            Finding(
+                id="SYS-RAM-SIZING-001",
+                title="No DB RAM recommendation available",
+                category="capacity",
+                status=FindingStatus.NOT_EVALUATED,
+                summary="EXA_DB_SIZE_DAILY has no row with a RECOMMENDED_DB_RAM_SIZE_AVG value in this window.",
+                confidence="LOW",
+                requirements=["EXA_DB_SIZE_DAILY"],
+            )
+        ]
+
+    latest = rows[-1]
+    return [
+        Finding(
+            id="SYS-RAM-SIZING-001",
+            title="Exasol-recommended DB RAM",
+            category="capacity",
+            status=FindingStatus.INFO,
+            summary=(
+                f"Exasol's own sizing calculation recommends {latest.recommended_db_ram_size_avg_gib:.1f} GiB "
+                f"of DB RAM for this cluster's current data volume, including TEMP headroom, as of "
+                f"{latest.interval_start.date().isoformat()}."
+            ),
+            evidence=[
+                Evidence(
+                    source="EXA_DB_SIZE_DAILY",
+                    stability="PUBLIC",
+                    metric="RECOMMENDED_DB_RAM_SIZE_AVG",
+                    value=latest.recommended_db_ram_size_avg_gib,
+                    unit="GiB",
+                    timestamp=latest.interval_start,
+                    context="Exasol's own DB RAM sizing recommendation, including TEMP headroom",
+                )
+            ],
+            recommendation=(
+                "Compare this figure against your cluster's actually provisioned DB RAM (ExaDoctor has no "
+                "public source to see that itself). If provisioned RAM is meaningfully below this "
+                "recommendation, TEMP-heavy statements and TEMP usage spikes elsewhere in this report are "
+                "more likely a capacity issue than a per-query one -- see Exasol's sizing guide: "
+                "https://docs.exasol.com/db/latest/administration/on-premise/sizing.htm"
+            ),
+            confidence="HIGH",
+            requirements=["EXA_DB_SIZE_DAILY"],
+            limitations=[
+                "This is Exasol's own sizing recommendation, not an ExaDoctor-invented threshold -- but "
+                "ExaDoctor cannot see your cluster's actually provisioned RAM to compare it against, so this "
+                "is always informational, never a pass/fail judgement."
+            ],
+            documentation=["Exasol official sizing documentation: RECOMMENDED_DB_RAM_SIZE_* columns"],
         )
     ]
 
@@ -816,5 +915,6 @@ PUBLIC_CORE_RULES: list[Rule] = [
     Rule(id="SQL-REMOTE-001", title="Remote-storage-heavy statement", category="workload", evaluate=evaluate_sql_remote),
     Rule(id="SYS-TEMP-001", title="TEMP usage anomaly", category="system", evaluate=evaluate_sys_temp),
     Rule(id="STORAGE-GROWTH-001", title="Unusual database growth", category="capacity", evaluate=evaluate_storage_growth),
+    Rule(id="SYS-RAM-SIZING-001", title="Exasol-recommended DB RAM", category="capacity", evaluate=evaluate_ram_sizing),
     Rule(id="SESSION-LONG-001", title="Long-lived session", category="sessions", evaluate=evaluate_session_long),
 ]
