@@ -48,6 +48,9 @@ export EXADOCTOR_PASSWORD=...
 exadoctor scan
 ```
 
+*(Windows PowerShell? `export` won't work there — see
+[Configure](#configure) below for the `$env:` equivalent.)*
+
 ### Requirements
 
 - A reachable Exasol instance.
@@ -88,6 +91,26 @@ Connection settings are environment variables only — never CLI flags
 | `EXADOCTOR_BASELINE_DB` | no | `~/.exadoctor/baselines.db` | Local SQLite path for `baseline` |
 | `EXADOCTOR_LLM_PROVIDER` | no | `none` | Set to `local` to enable `--explain` |
 | `EXADOCTOR_LLM_BASE_URL` | no | `http://localhost:8080` | Local LLM server (OpenAI-compatible `/v1/chat/completions`, e.g. a llama.cpp server) |
+
+**Setting these — macOS/Linux/WSL (bash/zsh):**
+
+```sh
+export EXADOCTOR_HOST=localhost
+export EXADOCTOR_USER=sys
+export EXADOCTOR_PASSWORD=...
+```
+
+**Windows (PowerShell)** — `export` doesn't exist there; use `$env:` instead:
+
+```powershell
+$env:EXADOCTOR_HOST = "localhost"
+$env:EXADOCTOR_USER = "sys"
+$env:EXADOCTOR_PASSWORD = "..."
+```
+
+Either way, these only last for the current terminal session — set them
+again in each new window, or add them to your shell profile
+(`~/.bashrc`/`~/.zshrc`, or PowerShell's `$PROFILE`) to persist them.
 
 **What user should I connect as?** Any user with ordinary query access
 works — ExaDoctor never needs `CREATE`/`ALTER`/`GRANT` or any other write
