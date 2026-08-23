@@ -1,7 +1,7 @@
 #!/bin/sh
 # install.sh -- ExaDoctor one-command installer.
 #
-#   curl -fsSL https://raw.githubusercontent.com/SanjayG-Data/exadoctor/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/SanjayG-Data/ExaDocter/main/install.sh | sh
 #
 # What it does, in order:
 #   1. checks for curl and git (needed to fetch uv and the source)
@@ -40,7 +40,7 @@
 
 set -u
 
-EXADOCTOR_SOURCE_DEFAULT="git+https://github.com/SanjayG-Data/exadoctor"
+EXADOCTOR_SOURCE_DEFAULT="git+https://github.com/SanjayG-Data/ExaDocter"
 
 main() {
     # Plain ASCII, no color, when stdout isn't a terminal (e.g. redirected

@@ -14,7 +14,7 @@
 [![For Exasol](https://img.shields.io/badge/for-Exasol-1a1a1a)](https://www.exasol.com/)
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/SanjayG-Data/exadoctor/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/SanjayG-Data/ExaDocter/main/install.sh | sh
 ```
 
 </div>
@@ -37,7 +37,7 @@ needs isn't available, it says so instead of guessing.
 
 ```sh
 # 1. install
-curl -fsSL https://raw.githubusercontent.com/SanjayG-Data/exadoctor/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/SanjayG-Data/ExaDocter/main/install.sh | sh
 
 # 2. point it at your database
 export EXADOCTOR_HOST=localhost
