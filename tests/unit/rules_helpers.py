@@ -12,6 +12,8 @@ from exadoctor.collectors.models import (
     Parameter,
     SessionInfo,
     SqlStatement,
+    SystemEvent,
+    TransactionConflict,
     UsageSample,
 )
 from exadoctor.models.snapshot import DatabaseInfo, Snapshot
@@ -33,6 +35,8 @@ def make_snapshot(
     workload: CollectionResult[SqlStatement] | None = None,
     storage: CollectionResult[DbSizeDailySample] | None = None,
     sessions: CollectionResult[SessionInfo] | None = None,
+    system_events: CollectionResult[SystemEvent] | None = None,
+    transaction_conflicts: CollectionResult[TransactionConflict] | None = None,
     database_time: datetime | None = DB_TIME,
 ) -> Snapshot:
     return Snapshot(
@@ -46,6 +50,10 @@ def make_snapshot(
         monitoring=monitoring if monitoring is not None else _empty("EXA_MONITOR_LAST_DAY"),
         storage=storage if storage is not None else _empty("EXA_DB_SIZE_DAILY"),
         usage=_empty("EXA_USAGE_LAST_DAY"),
+        system_events=system_events if system_events is not None else _empty("EXA_SYSTEM_EVENTS"),
+        transaction_conflicts=(
+            transaction_conflicts if transaction_conflicts is not None else _empty("EXA_DBA_TRANSACTION_CONFLICTS")
+        ),
     )
 
 
@@ -63,6 +71,14 @@ def unavailable_storage() -> CollectionResult[DbSizeDailySample]:
 
 def unavailable_sessions() -> CollectionResult[SessionInfo]:
     return _unavailable("EXA_ALL_SESSIONS")
+
+
+def unavailable_system_events() -> CollectionResult[SystemEvent]:
+    return _unavailable("EXA_SYSTEM_EVENTS")
+
+
+def unavailable_transaction_conflicts() -> CollectionResult[TransactionConflict]:
+    return _unavailable("EXA_DBA_TRANSACTION_CONFLICTS")
 
 
 def monitor_sample(measure_time: datetime, **kwargs) -> MonitorSample:
@@ -117,6 +133,36 @@ def db_size_sample(interval_start: datetime, **kwargs) -> DbSizeDailySample:
     )
     defaults.update(kwargs)
     return DbSizeDailySample(**defaults)
+
+
+def system_event(measure_time: datetime, **kwargs) -> SystemEvent:
+    defaults = dict(
+        cluster_name="MAIN",
+        measure_time=measure_time,
+        event_type="STARTUP",
+        dbms_version="2026.1.0",
+        nodes=1,
+        db_ram_size_gib=2.0,
+        vcpu=22,
+    )
+    defaults.update(kwargs)
+    return SystemEvent(**defaults)
+
+
+def transaction_conflict(start_time: datetime, **kwargs) -> TransactionConflict:
+    from datetime import timedelta
+
+    defaults = dict(
+        session_id=1,
+        conflict_session_id=2,
+        start_time=start_time,
+        stop_time=start_time + timedelta(seconds=1),
+        conflict_type="WAIT FOR COMMIT",
+        conflict_objects="SCHEMA.TABLE",
+        conflict_info=None,
+    )
+    defaults.update(kwargs)
+    return TransactionConflict(**defaults)
 
 
 def session_info(session_id: int, **kwargs) -> SessionInfo:

@@ -27,6 +27,8 @@ from exadoctor.collectors.models import (
     Parameter,
     SessionInfo,
     SqlStatement,
+    SystemEvent,
+    TransactionConflict,
     UsageSample,
 )
 from exadoctor.collectors.orchestrator import collect_all
@@ -65,6 +67,8 @@ class Snapshot:
     monitoring: CollectionResult[MonitorSample]
     storage: CollectionResult[DbSizeDailySample]
     usage: CollectionResult[UsageSample]
+    system_events: CollectionResult[SystemEvent]
+    transaction_conflicts: CollectionResult[TransactionConflict]
     schema_version: str = SCHEMA_VERSION
     collection_time: datetime = field(default_factory=_utc_now)
     # The Exasol server's own clock at collection time (naive, server civil
@@ -90,6 +94,8 @@ class Snapshot:
             "monitoring": self.monitoring.to_dict(),
             "storage": self.storage.to_dict(),
             "usage": self.usage.to_dict(),
+            "system_events": self.system_events.to_dict(),
+            "transaction_conflicts": self.transaction_conflicts.to_dict(),
             "findings": [f.to_dict() for f in self.findings],
         }
 
@@ -108,6 +114,8 @@ class Snapshot:
             monitoring=CollectionResult.from_dict(data["monitoring"], MonitorSample),
             storage=CollectionResult.from_dict(data["storage"], DbSizeDailySample),
             usage=CollectionResult.from_dict(data["usage"], UsageSample),
+            system_events=CollectionResult.from_dict(data["system_events"], SystemEvent),
+            transaction_conflicts=CollectionResult.from_dict(data["transaction_conflicts"], TransactionConflict),
             findings=[Finding.from_dict(f) for f in data["findings"]],
         )
 
@@ -135,4 +143,6 @@ def build_snapshot(gateway: SqlGateway, host: str, port: int) -> Snapshot:
         monitoring=collected["monitoring"],
         storage=collected["storage"],
         usage=collected["usage"],
+        system_events=collected["system_events"],
+        transaction_conflicts=collected["transaction_conflicts"],
     )

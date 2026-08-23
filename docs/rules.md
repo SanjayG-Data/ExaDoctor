@@ -20,19 +20,18 @@ command's own code path touch it").
 
 | Command | Tables it reads |
 |---|---|
-| `capabilities` | Probes existence/access on every registered public source (`exadoctor.capabilities.sources.PUBLIC_SOURCES`) — 12 tables in total, listed in [`capability-matrix.md`](capability-matrix.md). Most of these are checked for availability only; not all are actually collected elsewhere. |
-| `scan` | `EXA_METADATA`, `EXA_PARAMETERS`, `EXA_ALL_SESSIONS`, `EXA_SQL_LAST_DAY`, `EXA_MONITOR_LAST_DAY`, `EXA_DB_SIZE_DAILY`, `EXA_USAGE_LAST_DAY` — one collector each, see `exadoctor.models.snapshot.build_snapshot`. |
+| `capabilities` | Probes existence/access on every registered public source (`exadoctor.capabilities.sources.PUBLIC_SOURCES`) — 13 tables in total, listed in [`capability-matrix.md`](capability-matrix.md). Most of these are checked for availability only; not all are actually collected elsewhere. |
+| `scan` | `EXA_METADATA`, `EXA_PARAMETERS`, `EXA_ALL_SESSIONS`, `EXA_SQL_LAST_DAY`, `EXA_MONITOR_LAST_DAY`, `EXA_DB_SIZE_DAILY`, `EXA_USAGE_LAST_DAY`, `EXA_SYSTEM_EVENTS`, `EXA_DBA_TRANSACTION_CONFLICTS` — one collector each, see `exadoctor.models.snapshot.build_snapshot`. |
 | `baseline create`/`compare`/`history` | Same collection as `scan` (`build_snapshot` is reused), but `compare`/`history` only ever diff three of those fields: workload duration by class and TEMP usage (both from `EXA_SQL_LAST_DAY`) and storage size (from `EXA_DB_SIZE_DAILY`). The rest of the snapshot is saved to the local baseline store but not compared. |
 | `query` | `EXA_SQL_LAST_DAY` (that one statement's own row) plus `EXA_DBA_PROFILE_LAST_DAY`/`EXA_DBA_PROFILE_RUNNING` (its profile parts, whichever source actually has rows for that session/statement). |
 
-Two sources registered for `capabilities` are **not** read by anything
+One source registered for `capabilities` is **not** read by anything
 else in this build: `EXA_DBA_SESSIONS` (probed for the "enhanced,
 cross-user session detail" capability, but no collector queries it —
-`EXA_ALL_SESSIONS` is what `scan` actually uses) and `EXA_DBA_AUDIT_SQL`/
-`EXA_DBA_TRANSACTION_CONFLICTS` (probed for future use; no current rule
-or collector consumes either). `exadoctor capabilities` reports all three
-as available or not, but a "yes" for them doesn't mean any other command
-will use them yet.
+`EXA_ALL_SESSIONS` is what `scan` actually uses). `EXA_DBA_AUDIT_SQL` is
+similarly probed but not yet consumed by any rule. `EXA_DBA_TRANSACTION_CONFLICTS`
+*used* to be in that same "probed but unused" category — it's now read by
+`SQL-CONFLICT-001` (see below).
 
 ## `exadoctor scan` — public-core rules
 
@@ -43,9 +42,10 @@ will use them yet.
 | `SQL-SLOW-001` | `EXA_SQL_LAST_DAY` | Per `command_class`, flags statements whose duration exceeds a policy-defined multiple of that class's own median — never a fixed-seconds threshold, since duration distributions differ wildly by class. Requires a policy-defined minimum sample count per class. |
 | `SQL-TEMP-001` | `EXA_SQL_LAST_DAY` | Same median-relative approach as `SQL-SLOW-001`, applied to `TEMP_DB_RAM_PEAK` across TEMP-using statements. Its `recommendation` explicitly notes that TEMP spillover for large sorts/joins/aggregations is expected Exasol behavior, not inherently a fault, and points at `SYS-RAM-SIZING-001` before assuming a per-query problem. |
 | `SQL-REMOTE-001` | `EXA_SQL_LAST_DAY` | Reports the top contributors to remote-storage reads. Always `INFO`, never auto-escalated — remote storage use can be a deliberate, expected part of a workload. |
+| `SQL-CONFLICT-001` | `EXA_DBA_TRANSACTION_CONFLICTS` + `EXA_SQL_LAST_DAY` | Sums transaction-conflict wait time (`WAIT FOR COMMIT`/`TRANSACTION ROLLBACK`, windowed to the last day) and expresses it as a share of total workload duration in the same window; `WARNING` at or above a policy-defined share threshold. A distinct bottleneck class from every other workload rule here — concurrency/lock contention between sessions, not plan or data-movement inefficiency within one statement. Requires `SELECT ANY DICTIONARY`. |
 | `SYS-TEMP-001` | `EXA_MONITOR_LAST_DAY` | Two independent checks against the window's own `TEMP_DB_RAM` median: a spike check (any sample far above median) and a sustained-elevation check (a policy-defined fraction of samples above a lower multiple). Separate findings, since a brief spike and persistent pressure call for different follow-up. Same "check `SYS-RAM-SIZING-001` before assuming a per-query problem" framing as `SQL-TEMP-001`. |
 | `STORAGE-GROWTH-001` | `EXA_DB_SIZE_DAILY` | Compares the latest daily `STORAGE_SIZE_AVG` to the trailing-history median; flags growth beyond a policy-defined ratio. Trend-relative to the instance's own history, not an absolute capacity judgement. |
-| `SYS-RAM-SIZING-001` | `EXA_DB_SIZE_DAILY` | Reports Exasol's own `RECOMMENDED_DB_RAM_SIZE_AVG` for the latest day — the column Exasol's [sizing documentation](https://docs.exasol.com/db/latest/administration/on-premise/sizing.htm) itself names as the way to check DB RAM sizing on a running system, and whose formula already bakes in TEMP headroom. Always `INFO`: ExaDoctor has no public source exposing the cluster's actually-provisioned RAM, so it can surface Exasol's recommendation but can't itself judge whether it's being met. |
+| `SYS-RAM-SIZING-001` | `EXA_DB_SIZE_DAILY` + `EXA_SYSTEM_EVENTS` | Compares Exasol's own `RECOMMENDED_DB_RAM_SIZE_AVG` (the column Exasol's [sizing documentation](https://docs.exasol.com/db/latest/administration/on-premise/sizing.htm) itself names as the way to check DB RAM sizing on a running system, and whose formula already bakes in TEMP headroom) against the cluster's actually-provisioned `DB_RAM_SIZE`. `WARNING` if provisioned RAM is below the recommendation, `PASS` if it meets or exceeds it. Falls back to `INFO` (reporting only the recommendation) if `EXA_SYSTEM_EVENTS` is unavailable. |
 | `SESSION-LONG-001` | `EXA_ALL_SESSIONS` + `Snapshot.database_time` | Session age = `database_time - LOGIN_TIME`, using the Exasol server's own clock (never the collecting host's — see `docs/architecture.md` for why that distinction is load-bearing). `NOT_EVALUATED` if `database_time` couldn't be determined, rather than silently using the wrong clock. |
 
 ## `exadoctor query` — deep per-statement rules

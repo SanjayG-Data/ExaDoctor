@@ -13,7 +13,17 @@ from decimal import Decimal
 
 import pytest
 
-from exadoctor.collectors import metadata, monitoring, parameters, sessions, storage, usage, workload
+from exadoctor.collectors import (
+    metadata,
+    monitoring,
+    parameters,
+    sessions,
+    storage,
+    system_events,
+    transaction_conflicts,
+    usage,
+    workload,
+)
 from exadoctor.collectors.base import run_bounded_collector
 from exadoctor.collectors.orchestrator import collect_all
 from exadoctor.connection.gateway import QueryResult
@@ -157,6 +167,73 @@ def test_collect_db_size_daily_rejects_non_positive_window() -> None:
         storage.collect_db_size_daily(ScriptedGateway({}), window_days=0)
 
 
+def test_collect_system_events_maps_rows() -> None:
+    gateway = ScriptedGateway(
+        {
+            system_events.SQL: QueryResult(
+                columns=[],
+                rows=[("MAIN", datetime(2026, 8, 22, 11, 48, 15, 908000), "STARTUP", "2026.1.0", 1, Decimal("2"), 22)],
+            )
+        }
+    )
+    result = system_events.collect_system_events(gateway)
+    assert result.rows[0].event_type == "STARTUP"
+    assert result.rows[0].db_ram_size_gib == 2.0
+    assert result.rows[0].nodes == 1
+    assert result.rows[0].vcpu == 22
+
+
+def test_collect_transaction_conflicts_uses_default_window_in_sql() -> None:
+    captured_sql = {}
+
+    class CapturingGateway:
+        def execute(self, sql: str) -> QueryResult:
+            captured_sql["sql"] = sql
+            return QueryResult(columns=[], rows=[])
+
+    transaction_conflicts.collect_transaction_conflicts(CapturingGateway())
+    assert "INTERVAL '1' DAY" in captured_sql["sql"]
+
+
+def test_collect_transaction_conflicts_rejects_non_positive_window() -> None:
+    with pytest.raises(ValueError):
+        transaction_conflicts.collect_transaction_conflicts(ScriptedGateway({}), window_days=0)
+
+
+def test_collect_transaction_conflicts_maps_rows_including_open_conflict() -> None:
+    class CapturingGateway:
+        def execute(self, sql: str) -> QueryResult:
+            return QueryResult(
+                columns=[],
+                rows=[
+                    (
+                        1870936279216291840,
+                        1870936279003561984,
+                        datetime(2026, 8, 22, 11, 32, 1, 246000),
+                        datetime(2026, 8, 22, 11, 32, 1, 280000),
+                        "WAIT FOR COMMIT",
+                        "MARKET.SIGNALS",
+                        None,
+                    ),
+                    # STOP_TIME NULL -- conflict still open at collection time.
+                    (
+                        1870936279356473344,
+                        1870936279216291840,
+                        datetime(2026, 8, 22, 11, 33, 0, 0),
+                        None,
+                        "WAIT FOR COMMIT",
+                        "MARKET.SIGNALS",
+                        None,
+                    ),
+                ],
+            )
+
+    result = transaction_conflicts.collect_transaction_conflicts(CapturingGateway())
+    assert len(result.rows) == 2
+    assert result.rows[0].stop_time is not None
+    assert result.rows[1].stop_time is None
+
+
 def test_collector_degrades_gracefully_on_query_failure() -> None:
     gateway = ScriptedGateway({metadata.SQL: ConnectionFailedError("object EXA_METADATA not found")})
     result = metadata.collect_metadata(gateway)
@@ -187,13 +264,15 @@ def test_collect_all_survives_one_failing_collector() -> None:
             workload.SQL: QueryResult(columns=[], rows=[]),
             monitoring.SQL: QueryResult(columns=[], rows=[]),
             usage.SQL: QueryResult(columns=[], rows=[]),
+            system_events.SQL: QueryResult(columns=[], rows=[]),
         }
     )
-    # storage.py builds its SQL dynamically (window clause), so match on a
-    # substring for that one instead of an exact-string key.
+    # storage.py and transaction_conflicts.py both build their SQL
+    # dynamically (window clause), so match on a substring for those instead
+    # of an exact-string key.
     class GatewayWithStorage(ScriptedGateway):
         def execute(self, sql: str) -> QueryResult:
-            if "EXA_DB_SIZE_DAILY" in sql:
+            if "EXA_DB_SIZE_DAILY" in sql or "EXA_DBA_TRANSACTION_CONFLICTS" in sql:
                 return QueryResult(columns=[], rows=[])
             return super().execute(sql)
 
@@ -208,6 +287,8 @@ def test_collect_all_survives_one_failing_collector() -> None:
         "monitoring",
         "storage",
         "usage",
+        "system_events",
+        "transaction_conflicts",
     }
     assert results["metadata"].available is False
     assert results["parameters"].available is True

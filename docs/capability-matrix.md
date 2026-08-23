@@ -31,7 +31,8 @@ explicitly out of scope for this build — see
 | `EXA_DBA_PROFILE_LAST_DAY` | Yes | `SESSION_ID`, `STMT_ID`, `COMMAND_NAME`, `COMMAND_CLASS`, `PART_ID`, `PART_NAME`, `PART_INFO`, `OBJECT_SCHEMA`, `OBJECT_NAME`, `OBJECT_ROWS`, `OUT_ROWS`, `DURATION`, `CPU`, memory/I/O columns, `NET`, `REMARKS`, `SQL_TEXT` | OK (1 row observed — profiling not broadly enabled on the probed instance) | **No `IN_ROWS` column.** Only `OUT_ROWS`, `OBJECT_ROWS`. Row-expansion analysis (`IN_ROWS`→`OUT_ROWS`) is therefore provably unavailable on the public path — see [`internal-interface-policy.md`](internal-interface-policy.md). |
 | `EXA_DBA_PROFILE_RUNNING` | Yes | Same shape as `LAST_DAY` plus `PART_FINISHED` | OK (4 rows); requires `SELECT ANY DICTIONARY` | Live/running variant. |
 | `EXA_DBA_AUDIT_SQL` | Yes | Same shape as `EXA_SQL_LAST_DAY` plus `SCOPE_SCHEMA`, `SQL_TEXT` | OK (274,362 rows) | Populated only when auditing is enabled in EXAoperation — do not assume availability. |
-| `EXA_DBA_TRANSACTION_CONFLICTS` | Yes | `SESSION_ID`, `CONFLICT_SESSION_ID`, `START_TIME`, `STOP_TIME`, `CONFLICT_TYPE`, `CONFLICT_OBJECTS`, `CONFLICT_INFO` | OK (5,102 rows) | Requires `SELECT ANY DICTIONARY`. |
+| `EXA_DBA_TRANSACTION_CONFLICTS` | Yes | `SESSION_ID`, `CONFLICT_SESSION_ID`, `START_TIME`, `STOP_TIME`, `CONFLICT_TYPE`, `CONFLICT_OBJECTS`, `CONFLICT_INFO` | OK (5,102 rows) | Requires `SELECT ANY DICTIONARY`. `STOP_TIME` is `NULL` for a conflict still open at query time. `CONFLICT_TYPE` documented values: `WAIT FOR COMMIT`, `TRANSACTION ROLLBACK`. Basis for `SQL-CONFLICT-001`. Accumulates indefinitely like `EXA_DB_SIZE_DAILY` — the collector windows it to the last day. |
+| `EXA_SYSTEM_EVENTS` | Yes | `CLUSTER_NAME`, `MEASURE_TIME`, `EVENT_TYPE` (`STARTUP`/`SHUTDOWN`/`RESTART`/backup/recovery events), `DBMS_VERSION`, `NODES`, `DB_RAM_SIZE` ("Used DB RAM license in GiB", per Exasol's own column comment), `PARAMETERS`, `VCPU` | OK (55 rows spanning since 2026-05-15 on the probed instance) | One row per lifecycle event, not a rolling telemetry stream — stays small over a cluster's realistic lifetime, no window needed. `DB_RAM_SIZE` is the actually-provisioned counterpart to `EXA_DB_SIZE_DAILY.RECOMMENDED_DB_RAM_SIZE_AVG` — basis for `SYS-RAM-SIZING-001`'s real comparison. Privilege requirement unconfirmed (not `DBA_`-prefixed, readable as `SYS` without an explicit grant in this probe, but not tested against a restricted user). |
 
 ## Privilege note
 
@@ -60,4 +61,5 @@ actually see — don't assume this table's results transfer.
 | NODE SYNC analysis | **NOT_EVALUATED by design** | Internal-only, out of scope |
 | Per-process imbalance / skew | **NOT_EVALUATED by design** | Internal-only, out of scope |
 | Audit SQL analysis | Conditional | `EXA_DBA_AUDIT_SQL`, requires auditing enabled |
-| Transaction conflict analysis | Privilege-dependent | `EXA_DBA_TRANSACTION_CONFLICTS` |
+| Transaction conflict analysis | Available (privilege-dependent) | `EXA_DBA_TRANSACTION_CONFLICTS` (`SQL-CONFLICT-001`) |
+| DB RAM sizing vs. Exasol's own recommendation | Available | `EXA_DB_SIZE_DAILY` + `EXA_SYSTEM_EVENTS` (`SYS-RAM-SIZING-001`) |

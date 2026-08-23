@@ -15,6 +15,8 @@ from exadoctor.collectors.monitoring import collect_monitor_last_day
 from exadoctor.collectors.parameters import collect_parameters
 from exadoctor.collectors.sessions import collect_sessions
 from exadoctor.collectors.storage import collect_db_size_daily
+from exadoctor.collectors.system_events import collect_system_events
+from exadoctor.collectors.transaction_conflicts import collect_transaction_conflicts
 from exadoctor.collectors.usage import collect_usage_last_day
 from exadoctor.collectors.workload import collect_sql_last_day
 from exadoctor.connection.gateway import SqlGateway
@@ -29,4 +31,6 @@ def collect_all(gateway: SqlGateway) -> dict[str, CollectionResult[Any]]:
         "monitoring": collect_monitor_last_day(gateway),
         "storage": collect_db_size_daily(gateway),
         "usage": collect_usage_last_day(gateway),
+        "system_events": collect_system_events(gateway),
+        "transaction_conflicts": collect_transaction_conflicts(gateway),
     }

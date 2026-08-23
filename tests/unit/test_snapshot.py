@@ -14,6 +14,8 @@ from exadoctor.collectors.models import (
     Parameter,
     SessionInfo,
     SqlStatement,
+    SystemEvent,
+    TransactionConflict,
     UsageSample,
 )
 from exadoctor.models.snapshot import SCHEMA_VERSION, DatabaseInfo, Snapshot
@@ -125,6 +127,41 @@ def _sample_snapshot() -> Snapshot:
         reason=None,
         rows=[UsageSample(cluster_name="MAIN", measure_time=datetime(2026, 8, 21, 13, 0), users=1, queries=0)],  # naive: real Exasol TIMESTAMP
     )
+    system_events = CollectionResult(
+        source_id="EXA_SYSTEM_EVENTS",
+        stability="PUBLIC",
+        available=True,
+        reason=None,
+        rows=[
+            SystemEvent(
+                cluster_name="MAIN",
+                measure_time=datetime(2026, 8, 22, 11, 48, 15, 908000),  # naive: real Exasol TIMESTAMP
+                event_type="STARTUP",
+                dbms_version="2026.1.0",
+                nodes=1,
+                db_ram_size_gib=2.0,
+                vcpu=22,
+            )
+        ],
+    )
+
+    transaction_conflicts = CollectionResult(
+        source_id="EXA_DBA_TRANSACTION_CONFLICTS",
+        stability="PUBLIC",
+        available=True,
+        reason=None,
+        rows=[
+            TransactionConflict(
+                session_id=1870936279216291840,
+                conflict_session_id=1870936279003561984,
+                start_time=datetime(2026, 8, 22, 11, 32, 1, 246000),  # naive: real Exasol TIMESTAMP
+                stop_time=datetime(2026, 8, 22, 11, 32, 1, 280000),  # naive: real Exasol TIMESTAMP
+                conflict_type="WAIT FOR COMMIT",
+                conflict_objects="MARKET.SIGNALS",
+                conflict_info=None,
+            )
+        ],
+    )
 
     return Snapshot(
         database=DatabaseInfo(host="localhost", port=8564, version="2026.1.0"),
@@ -136,6 +173,8 @@ def _sample_snapshot() -> Snapshot:
         monitoring=monitoring,
         storage=storage,
         usage=usage,
+        system_events=system_events,
+        transaction_conflicts=transaction_conflicts,
         collection_time=datetime(2026, 8, 22, 12, 0, 2, tzinfo=timezone.utc),
         database_time=datetime(2026, 8, 22, 12, 0, 1, 500000),  # naive: Exasol server civil time
         findings=[

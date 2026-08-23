@@ -32,6 +32,11 @@ class RulePolicy:
     max_findings_per_rule: int = 25
     dominant_part_share_threshold: float = 0.5
     temp_materialize_mib_threshold: float = 100.0
+    # Cumulative transaction-conflict wait time as a share of total workload
+    # duration in the same window -- mirrors the same "share of total
+    # duration" framing SQL-FAIL-001/PERF-BOTTLENECK-001 already use, applied
+    # to EXA_DBA_TRANSACTION_CONFLICTS instead of profile parts.
+    transaction_conflict_share_threshold: float = 1.0
 
 
 DEFAULT_POLICY = RulePolicy()

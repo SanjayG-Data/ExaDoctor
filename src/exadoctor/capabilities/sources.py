@@ -137,6 +137,12 @@ PUBLIC_SOURCES: tuple[SourceSpec, ...] = (
         required_columns=("CLUSTER_NAME", "MEASURE_TIME", "USERS", "QUERIES"),
     ),
     SourceSpec(
+        id="EXA_SYSTEM_EVENTS",
+        schema="EXA_STATISTICS",
+        table="EXA_SYSTEM_EVENTS",
+        required_columns=("CLUSTER_NAME", "MEASURE_TIME", "EVENT_TYPE", "DBMS_VERSION", "NODES", "DB_RAM_SIZE", "VCPU"),
+    ),
+    SourceSpec(
         id="EXA_DBA_PROFILE_LAST_DAY",
         schema="EXA_STATISTICS",
         table="EXA_DBA_PROFILE_LAST_DAY",

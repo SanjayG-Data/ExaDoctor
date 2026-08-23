@@ -151,6 +151,44 @@
       }
     ]
   },
+  "system_events": {
+    "source_id": "EXA_SYSTEM_EVENTS",
+    "stability": "PUBLIC",
+    "available": true,
+    "reason": null,
+    "row_count": 1,
+    "collected_at": "2026-08-22T13:09:42.404184+00:00",
+    "rows": [
+      {
+        "cluster_name": "MAIN",
+        "measure_time": "2026-08-22T11:48:15.908000",
+        "event_type": "STARTUP",
+        "dbms_version": "2026.1.0",
+        "nodes": 1,
+        "db_ram_size_gib": 2.0,
+        "vcpu": 22
+      }
+    ]
+  },
+  "transaction_conflicts": {
+    "source_id": "EXA_DBA_TRANSACTION_CONFLICTS",
+    "stability": "PUBLIC",
+    "available": true,
+    "reason": null,
+    "row_count": 1,
+    "collected_at": "2026-08-22T13:09:42.404184+00:00",
+    "rows": [
+      {
+        "session_id": 1870936279216291840,
+        "conflict_session_id": 1870936279003561984,
+        "start_time": "2026-08-22T11:32:01.246000",
+        "stop_time": "2026-08-22T11:32:01.280000",
+        "conflict_type": "WAIT FOR COMMIT",
+        "conflict_objects": "MARKET.SIGNALS",
+        "conflict_info": null
+      }
+    ]
+  },
   "findings": [
     {
       "id": "SYS-SWAP-001",

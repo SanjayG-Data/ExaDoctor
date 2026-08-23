@@ -479,6 +479,165 @@ def evaluate_sql_remote(snapshot: Snapshot, policy: RulePolicy) -> list[Finding]
     ]
 
 
+def evaluate_transaction_conflicts(snapshot: Snapshot, policy: RulePolicy) -> list[Finding]:
+    """Reports lock/commit-wait contention from EXA_DBA_TRANSACTION_CONFLICTS
+    -- registered in the capability probe since Milestone 0 but never read by
+    any collector or rule until now. This is a distinct bottleneck class from
+    every other workload rule here: concurrency contention between sessions
+    (one transaction waiting on another to commit), not plan/data-movement
+    inefficiency within a single statement.
+
+    Expresses total conflict wait time as a share of total workload duration
+    in the same window, mirroring the same "share of total duration" framing
+    SQL-FAIL-001/PERF-BOTTLENECK-001 already use elsewhere. Requires
+    SELECT ANY DICTIONARY (see docs/privileges.md) -- degrades to
+    NOT_EVALUATED without it, same as the other privilege-gated sources.
+    """
+    result = snapshot.transaction_conflicts
+    if not result.available:
+        return [
+            not_evaluated(
+                "SQL-CONFLICT-001",
+                "Transaction conflict contention",
+                "workload",
+                result.reason or "EXA_DBA_TRANSACTION_CONFLICTS unavailable",
+                requirements=["EXA_DBA_TRANSACTION_CONFLICTS"],
+            )
+        ]
+
+    if not result.rows:
+        return [
+            Finding(
+                id="SQL-CONFLICT-001",
+                title="No transaction conflicts",
+                category="workload",
+                status=FindingStatus.PASS,
+                summary="No transaction conflicts (e.g. WAIT FOR COMMIT) observed in the workload window.",
+                confidence="HIGH",
+                requirements=["EXA_DBA_TRANSACTION_CONFLICTS"],
+            )
+        ]
+
+    closed = [c for c in result.rows if c.stop_time is not None]
+    open_count = len(result.rows) - len(closed)
+    total_conflict_seconds = sum((c.stop_time - c.start_time).total_seconds() for c in closed)
+
+    by_object: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0])  # [count, seconds]
+    for c in closed:
+        key = c.conflict_objects or "(unknown object)"
+        by_object[key][0] += 1
+        by_object[key][1] += (c.stop_time - c.start_time).total_seconds()
+    worst_object, worst_stats = (
+        max(by_object.items(), key=lambda kv: kv[1][1]) if by_object else (None, [0.0, 0.0])
+    )
+
+    workload_result = snapshot.workload
+    total_workload_seconds = (
+        sum(s.duration_seconds for s in workload_result.rows if s.duration_seconds is not None)
+        if workload_result.available
+        else None
+    )
+    conflict_share_percent = (
+        (total_conflict_seconds / total_workload_seconds * 100)
+        if total_workload_seconds and total_workload_seconds > 0
+        else None
+    )
+
+    evidence = [
+        Evidence(
+            source="EXA_DBA_TRANSACTION_CONFLICTS",
+            stability="PUBLIC",
+            metric="CONFLICT_DURATION",
+            value=total_conflict_seconds,
+            unit="seconds",
+            timestamp=max(c.start_time for c in result.rows),
+            context=(
+                f"{len(result.rows)} conflict(s), {open_count} still open, worst object="
+                f"{worst_object!r} ({worst_stats[0]:g} conflicts, {worst_stats[1]:.1f}s)"
+            ),
+        )
+    ]
+    limitations = [
+        "Conflict count/duration is windowed to the last day, same as EXA_SQL_LAST_DAY, for a comparable "
+        "share calculation -- older conflicts (this table does not roll off after 24h on its own) are not "
+        "included."
+    ]
+    if open_count:
+        limitations.append(
+            f"{open_count} conflict(s) had no STOP_TIME at collection time (still open or unresolved when "
+            "collected) and are excluded from the duration total."
+        )
+
+    if conflict_share_percent is None:
+        return [
+            Finding(
+                id="SQL-CONFLICT-001",
+                title="Transaction conflicts observed",
+                category="workload",
+                status=FindingStatus.INFO,
+                summary=(
+                    f"{len(result.rows)} transaction conflict(s) totaling {total_conflict_seconds:.1f}s of wait "
+                    f"time; workload duration was unavailable, so a share-of-total could not be computed."
+                ),
+                evidence=evidence,
+                recommendation=(
+                    f"Review contention on {worst_object!r} if this recurs; EXA_SQL_LAST_DAY was unavailable "
+                    "so this could not be expressed as a share of total workload time."
+                ),
+                confidence="MEDIUM",
+                requirements=["EXA_DBA_TRANSACTION_CONFLICTS"],
+                limitations=limitations,
+                documentation=["ExaDoctor policy: share-of-total-duration threshold"],
+            )
+        ]
+
+    if conflict_share_percent < policy.transaction_conflict_share_threshold:
+        return [
+            Finding(
+                id="SQL-CONFLICT-001",
+                title="Transaction conflicts within normal range",
+                category="workload",
+                status=FindingStatus.PASS,
+                summary=(
+                    f"{len(result.rows)} transaction conflict(s) totaling {total_conflict_seconds:.1f}s "
+                    f"({conflict_share_percent:.2f}% of total workload duration) -- below the "
+                    f"{policy.transaction_conflict_share_threshold:g}% threshold."
+                ),
+                evidence=evidence,
+                confidence="MEDIUM",
+                requirements=["EXA_DBA_TRANSACTION_CONFLICTS", "EXA_SQL_LAST_DAY"],
+                limitations=limitations,
+                documentation=["ExaDoctor policy: share-of-total-duration threshold"],
+            )
+        ]
+
+    return [
+        Finding(
+            id="SQL-CONFLICT-001",
+            title="Transaction conflict contention",
+            category="workload",
+            status=FindingStatus.WARNING,
+            summary=(
+                f"{len(result.rows)} transaction conflict(s) totaling {total_conflict_seconds:.1f}s "
+                f"({conflict_share_percent:.2f}% of total workload duration) -- at or above the "
+                f"{policy.transaction_conflict_share_threshold:g}% threshold. Worst-contended object: "
+                f"{worst_object!r} ({worst_stats[0]:g} conflicts, {worst_stats[1]:.1f}s)."
+            ),
+            evidence=evidence,
+            recommendation=(
+                "Sessions are spending meaningful time waiting on each other's commits/locks -- this is "
+                "concurrency contention, distinct from a slow query plan. Review transaction boundaries and "
+                f"commit frequency around {worst_object!r}, and whether conflicting sessions could be "
+                "serialized or batched instead of contending."
+            ),
+            confidence="MEDIUM",
+            requirements=["EXA_DBA_TRANSACTION_CONFLICTS", "EXA_SQL_LAST_DAY"],
+            limitations=limitations,
+            documentation=["ExaDoctor policy: share-of-total-duration threshold"],
+        )
+    ]
+
+
 def evaluate_sys_temp(snapshot: Snapshot, policy: RulePolicy) -> list[Finding]:
     result = snapshot.monitoring
     if not result.available:
@@ -709,39 +868,45 @@ def evaluate_storage_growth(snapshot: Snapshot, policy: RulePolicy) -> list[Find
     ]
 
 
-def evaluate_ram_sizing(snapshot: Snapshot, policy: RulePolicy) -> list[Finding]:
-    """Surfaces Exasol's own recommended DB RAM figure (`EXA_DB_SIZE_DAILY.
-    RECOMMENDED_DB_RAM_SIZE_AVG`) -- collected since Milestone 3 but never
-    read by any rule until now. Per Exasol's own sizing documentation
-    (https://docs.exasol.com/db/latest/administration/on-premise/sizing.htm),
-    this column is the documented way to check DB RAM sizing "if you have a
-    running system", and its formula already bakes in TEMP headroom (their
-    worked example uses 5% of compressed data volume) -- i.e. Exasol expects
-    some TEMP usage by design, not as an anomaly.
+_SIZING_DOC_URL = "https://docs.exasol.com/db/latest/administration/on-premise/sizing.htm"
 
-    Always INFO, never a WARNING: ExaDoctor has no public source exposing
-    the cluster's actually provisioned DB RAM, so it cannot itself judge
-    whether this recommendation is being met -- only surface the number so
-    a human can compare it against what they know they provisioned. This
-    mirrors SQL-REMOTE-001's "always INFO, human judgement required" pattern.
+
+def evaluate_ram_sizing(snapshot: Snapshot, policy: RulePolicy) -> list[Finding]:
+    """Compares Exasol's own recommended DB RAM (`EXA_DB_SIZE_DAILY.
+    RECOMMENDED_DB_RAM_SIZE_AVG`) against the cluster's actually provisioned
+    DB RAM (`EXA_SYSTEM_EVENTS.DB_RAM_SIZE`, documented by Exasol as "Used DB
+    RAM license in GiB") -- both collected since Milestone 3/this addition,
+    but never compared by any rule until now.
+
+    Per Exasol's own sizing documentation (see _SIZING_DOC_URL), this is the
+    documented way to check DB RAM sizing "if you have a running system", and
+    the recommendation formula already bakes in TEMP headroom (their worked
+    example uses 5% of compressed data volume) -- i.e. Exasol expects some
+    TEMP usage by design, not as an anomaly. That's also why SQL-TEMP-001/
+    SYS-TEMP-001 point here before assuming a per-query problem.
+
+    Falls back to an INFO-only report of the recommendation (this rule's
+    original behavior) if EXA_SYSTEM_EVENTS is unavailable/empty -- older
+    Exasol versions or a restricted user might not expose it, and reporting
+    only the recommended figure is still useful even without the comparison.
     """
-    result = snapshot.storage
-    if not result.available:
+    storage_result = snapshot.storage
+    if not storage_result.available:
         return [
             not_evaluated(
                 "SYS-RAM-SIZING-001",
                 "Exasol-recommended DB RAM",
                 "capacity",
-                result.reason or "EXA_DB_SIZE_DAILY unavailable",
+                storage_result.reason or "EXA_DB_SIZE_DAILY unavailable",
                 requirements=["EXA_DB_SIZE_DAILY"],
             )
         ]
 
-    rows = sorted(
-        (s for s in result.rows if s.recommended_db_ram_size_avg_gib is not None and s.interval_start is not None),
+    storage_rows = sorted(
+        (s for s in storage_result.rows if s.recommended_db_ram_size_avg_gib is not None and s.interval_start is not None),
         key=lambda s: s.interval_start,
     )
-    if not rows:
+    if not storage_rows:
         return [
             Finding(
                 id="SYS-RAM-SIZING-001",
@@ -753,45 +918,123 @@ def evaluate_ram_sizing(snapshot: Snapshot, policy: RulePolicy) -> list[Finding]
                 requirements=["EXA_DB_SIZE_DAILY"],
             )
         ]
+    recommended = storage_rows[-1]
 
-    latest = rows[-1]
+    events_result = snapshot.system_events
+    actual_events = (
+        sorted(
+            (e for e in events_result.rows if e.db_ram_size_gib is not None),
+            key=lambda e: e.measure_time,
+        )
+        if events_result.available
+        else []
+    )
+
+    if not actual_events:
+        return [
+            Finding(
+                id="SYS-RAM-SIZING-001",
+                title="Exasol-recommended DB RAM",
+                category="capacity",
+                status=FindingStatus.INFO,
+                summary=(
+                    f"Exasol's own sizing calculation recommends {recommended.recommended_db_ram_size_avg_gib:.1f} "
+                    f"GiB of DB RAM for this cluster's current data volume, including TEMP headroom, as of "
+                    f"{recommended.interval_start.date().isoformat()}."
+                ),
+                evidence=[
+                    Evidence(
+                        source="EXA_DB_SIZE_DAILY",
+                        stability="PUBLIC",
+                        metric="RECOMMENDED_DB_RAM_SIZE_AVG",
+                        value=recommended.recommended_db_ram_size_avg_gib,
+                        unit="GiB",
+                        timestamp=recommended.interval_start,
+                        context="Exasol's own DB RAM sizing recommendation, including TEMP headroom",
+                    )
+                ],
+                recommendation=(
+                    "Compare this figure against your cluster's actually provisioned DB RAM -- "
+                    f"EXA_SYSTEM_EVENTS was unavailable, so ExaDoctor could not do that comparison itself. "
+                    f"See Exasol's sizing guide: {_SIZING_DOC_URL}"
+                ),
+                confidence="HIGH",
+                requirements=["EXA_DB_SIZE_DAILY"],
+                limitations=[
+                    "This is Exasol's own sizing recommendation, not an ExaDoctor-invented threshold. "
+                    "EXA_SYSTEM_EVENTS (the source for actually-provisioned DB RAM) was unavailable, so this "
+                    "is informational only, not a pass/fail judgement."
+                ],
+                documentation=["Exasol official sizing documentation: RECOMMENDED_DB_RAM_SIZE_* columns"],
+            )
+        ]
+
+    actual = actual_events[-1]
+    gap = actual.db_ram_size_gib - recommended.recommended_db_ram_size_avg_gib
+    if actual.db_ram_size_gib >= recommended.recommended_db_ram_size_avg_gib:
+        return [
+            Finding(
+                id="SYS-RAM-SIZING-001",
+                title="DB RAM meets Exasol's recommendation",
+                category="capacity",
+                status=FindingStatus.PASS,
+                summary=(
+                    f"Provisioned DB RAM ({actual.db_ram_size_gib:.1f} GiB) meets or exceeds Exasol's own "
+                    f"recommendation ({recommended.recommended_db_ram_size_avg_gib:.1f} GiB, as of "
+                    f"{recommended.interval_start.date().isoformat()})."
+                ),
+                evidence=[
+                    Evidence(
+                        source="EXA_SYSTEM_EVENTS",
+                        stability="PUBLIC",
+                        metric="DB_RAM_SIZE",
+                        value=actual.db_ram_size_gib,
+                        unit="GiB",
+                        timestamp=actual.measure_time,
+                        context=f"recommended={recommended.recommended_db_ram_size_avg_gib:.1f} GiB",
+                    )
+                ],
+                confidence="HIGH",
+                requirements=["EXA_DB_SIZE_DAILY", "EXA_SYSTEM_EVENTS"],
+                documentation=["Exasol official sizing documentation: RECOMMENDED_DB_RAM_SIZE_* / DB_RAM_SIZE columns"],
+            )
+        ]
+
     return [
         Finding(
             id="SYS-RAM-SIZING-001",
-            title="Exasol-recommended DB RAM",
+            title="DB RAM below Exasol's recommendation",
             category="capacity",
-            status=FindingStatus.INFO,
+            status=FindingStatus.WARNING,
             summary=(
-                f"Exasol's own sizing calculation recommends {latest.recommended_db_ram_size_avg_gib:.1f} GiB "
-                f"of DB RAM for this cluster's current data volume, including TEMP headroom, as of "
-                f"{latest.interval_start.date().isoformat()}."
+                f"Provisioned DB RAM ({actual.db_ram_size_gib:.1f} GiB) is {-gap:.1f} GiB below Exasol's own "
+                f"recommendation ({recommended.recommended_db_ram_size_avg_gib:.1f} GiB, as of "
+                f"{recommended.interval_start.date().isoformat()})."
             ),
             evidence=[
                 Evidence(
-                    source="EXA_DB_SIZE_DAILY",
+                    source="EXA_SYSTEM_EVENTS",
                     stability="PUBLIC",
-                    metric="RECOMMENDED_DB_RAM_SIZE_AVG",
-                    value=latest.recommended_db_ram_size_avg_gib,
+                    metric="DB_RAM_SIZE",
+                    value=actual.db_ram_size_gib,
                     unit="GiB",
-                    timestamp=latest.interval_start,
-                    context="Exasol's own DB RAM sizing recommendation, including TEMP headroom",
+                    timestamp=actual.measure_time,
+                    context=f"recommended={recommended.recommended_db_ram_size_avg_gib:.1f} GiB",
                 )
             ],
             recommendation=(
-                "Compare this figure against your cluster's actually provisioned DB RAM (ExaDoctor has no "
-                "public source to see that itself). If provisioned RAM is meaningfully below this "
-                "recommendation, TEMP-heavy statements and TEMP usage spikes elsewhere in this report are "
-                "more likely a capacity issue than a per-query one -- see Exasol's sizing guide: "
-                "https://docs.exasol.com/db/latest/administration/on-premise/sizing.htm"
+                "Provisioned DB RAM is below Exasol's own recommendation, which already includes TEMP "
+                "headroom -- TEMP-heavy statements and TEMP usage spikes elsewhere in this report are more "
+                f"likely a capacity issue than a per-query one. See Exasol's sizing guide: {_SIZING_DOC_URL}"
             ),
             confidence="HIGH",
-            requirements=["EXA_DB_SIZE_DAILY"],
+            requirements=["EXA_DB_SIZE_DAILY", "EXA_SYSTEM_EVENTS"],
             limitations=[
-                "This is Exasol's own sizing recommendation, not an ExaDoctor-invented threshold -- but "
-                "ExaDoctor cannot see your cluster's actually provisioned RAM to compare it against, so this "
-                "is always informational, never a pass/fail judgement."
+                "Recommendation is based on the latest available EXA_DB_SIZE_DAILY row's data volume; "
+                "actual RAM is the most recent EXA_SYSTEM_EVENTS entry -- both are Exasol's own reported "
+                "figures, not ExaDoctor-invented thresholds."
             ],
-            documentation=["Exasol official sizing documentation: RECOMMENDED_DB_RAM_SIZE_* columns"],
+            documentation=["Exasol official sizing documentation: RECOMMENDED_DB_RAM_SIZE_* / DB_RAM_SIZE columns"],
         )
     ]
 
@@ -913,6 +1156,7 @@ PUBLIC_CORE_RULES: list[Rule] = [
     Rule(id="SQL-SLOW-001", title="Duration outlier", category="workload", evaluate=evaluate_sql_slow),
     Rule(id="SQL-TEMP-001", title="TEMP-heavy statement outlier", category="workload", evaluate=evaluate_sql_temp),
     Rule(id="SQL-REMOTE-001", title="Remote-storage-heavy statement", category="workload", evaluate=evaluate_sql_remote),
+    Rule(id="SQL-CONFLICT-001", title="Transaction conflict contention", category="workload", evaluate=evaluate_transaction_conflicts),
     Rule(id="SYS-TEMP-001", title="TEMP usage anomaly", category="system", evaluate=evaluate_sys_temp),
     Rule(id="STORAGE-GROWTH-001", title="Unusual database growth", category="capacity", evaluate=evaluate_storage_growth),
     Rule(id="SYS-RAM-SIZING-001", title="Exasol-recommended DB RAM", category="capacity", evaluate=evaluate_ram_sizing),

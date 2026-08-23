@@ -221,6 +221,52 @@ class DbSizeDailySample:
 
 
 @dataclass
+class SystemEvent:
+    cluster_name: str | None
+    measure_time: datetime
+    event_type: str | None
+    dbms_version: str | None
+    nodes: int | None
+    db_ram_size_gib: float | None
+    vcpu: int | None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> SystemEvent:
+        return cls(
+            cluster_name=data["cluster_name"],
+            measure_time=_parse_iso_datetime(data["measure_time"]),
+            event_type=data["event_type"],
+            dbms_version=data["dbms_version"],
+            nodes=data["nodes"],
+            db_ram_size_gib=data["db_ram_size_gib"],
+            vcpu=data["vcpu"],
+        )
+
+
+@dataclass
+class TransactionConflict:
+    session_id: int
+    conflict_session_id: int
+    start_time: datetime
+    stop_time: datetime | None
+    conflict_type: str | None
+    conflict_objects: str | None
+    conflict_info: str | None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TransactionConflict:
+        return cls(
+            session_id=data["session_id"],
+            conflict_session_id=data["conflict_session_id"],
+            start_time=_parse_iso_datetime(data["start_time"]),
+            stop_time=_parse_iso_datetime(data["stop_time"]),
+            conflict_type=data["conflict_type"],
+            conflict_objects=data["conflict_objects"],
+            conflict_info=data["conflict_info"],
+        )
+
+
+@dataclass
 class UsageSample:
     cluster_name: str | None
     measure_time: datetime

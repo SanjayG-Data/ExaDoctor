@@ -7,9 +7,13 @@ from rules_helpers import (
     monitor_sample,
     session_info,
     sql_statement,
+    system_event,
+    transaction_conflict,
     unavailable_monitoring,
     unavailable_sessions,
     unavailable_storage,
+    unavailable_system_events,
+    unavailable_transaction_conflicts,
     unavailable_workload,
 )
 
@@ -25,6 +29,7 @@ from exadoctor.rules.public_core import (
     evaluate_storage_growth,
     evaluate_sys_swap,
     evaluate_sys_temp,
+    evaluate_transaction_conflicts,
 )
 
 
@@ -288,6 +293,85 @@ def test_sql_remote_reports_info_not_warning_when_remote_reads_present():
     assert findings[0].status == FindingStatus.INFO  # never automatically a fault
 
 
+# ---- SQL-CONFLICT-001 -----------------------------------------------------
+
+
+def test_transaction_conflicts_not_evaluated_when_unavailable():
+    snapshot = make_snapshot(transaction_conflicts=unavailable_transaction_conflicts())
+    findings = evaluate_transaction_conflicts(snapshot, DEFAULT_POLICY)
+    assert findings[0].status == FindingStatus.NOT_EVALUATED
+
+
+def test_transaction_conflicts_passes_with_no_conflicts():
+    snapshot = make_snapshot()  # defaults to available, empty
+    findings = evaluate_transaction_conflicts(snapshot, DEFAULT_POLICY)
+    assert findings[0].status == FindingStatus.PASS
+
+
+def test_transaction_conflicts_info_when_workload_duration_unavailable():
+    from exadoctor.collectors.models import CollectionResult
+
+    rows = [transaction_conflict(DB_TIME)]
+    snapshot = make_snapshot(
+        transaction_conflicts=CollectionResult("EXA_DBA_TRANSACTION_CONFLICTS", "PUBLIC", True, None, rows),
+        workload=unavailable_workload(),
+    )
+    findings = evaluate_transaction_conflicts(snapshot, DEFAULT_POLICY)
+    assert findings[0].status == FindingStatus.INFO
+
+
+def test_transaction_conflicts_pass_when_share_below_threshold():
+    from exadoctor.collectors.models import CollectionResult
+
+    # 1 second of conflict wait against a 10,000-second total workload is
+    # 0.01% -- well under the 1.0% default threshold.
+    rows = [transaction_conflict(DB_TIME)]
+    workload_rows = [sql_statement(1, 1, duration_seconds=10000.0)]
+    snapshot = make_snapshot(
+        transaction_conflicts=CollectionResult("EXA_DBA_TRANSACTION_CONFLICTS", "PUBLIC", True, None, rows),
+        workload=CollectionResult("EXA_SQL_LAST_DAY", "PUBLIC", True, None, workload_rows),
+    )
+    findings = evaluate_transaction_conflicts(snapshot, DEFAULT_POLICY)
+    assert findings[0].status == FindingStatus.PASS
+
+
+def test_transaction_conflicts_warns_when_share_at_or_above_threshold():
+    from datetime import timedelta
+
+    from exadoctor.collectors.models import CollectionResult
+
+    # 100 seconds of conflict wait against a 1000-second total workload is
+    # 10% -- clears the 1.0% default threshold.
+    rows = [transaction_conflict(DB_TIME, stop_time=DB_TIME + timedelta(seconds=100))]
+    workload_rows = [sql_statement(1, 1, duration_seconds=1000.0)]
+    snapshot = make_snapshot(
+        transaction_conflicts=CollectionResult("EXA_DBA_TRANSACTION_CONFLICTS", "PUBLIC", True, None, rows),
+        workload=CollectionResult("EXA_SQL_LAST_DAY", "PUBLIC", True, None, workload_rows),
+    )
+    findings = evaluate_transaction_conflicts(snapshot, DEFAULT_POLICY)
+    assert findings[0].status == FindingStatus.WARNING
+    assert "SCHEMA.TABLE" in findings[0].summary  # the default transaction_conflict() object
+
+
+def test_transaction_conflicts_excludes_still_open_conflicts_from_duration():
+    from exadoctor.collectors.models import CollectionResult
+
+    # An open conflict (no stop_time) must not crash the duration sum and
+    # must not silently count as zero-duration -- it's excluded and called
+    # out via the open-conflict limitation instead.
+    rows = [
+        transaction_conflict(DB_TIME, stop_time=None),
+        transaction_conflict(DB_TIME),
+    ]
+    workload_rows = [sql_statement(1, 1, duration_seconds=100.0)]
+    snapshot = make_snapshot(
+        transaction_conflicts=CollectionResult("EXA_DBA_TRANSACTION_CONFLICTS", "PUBLIC", True, None, rows),
+        workload=CollectionResult("EXA_SQL_LAST_DAY", "PUBLIC", True, None, workload_rows),
+    )
+    findings = evaluate_transaction_conflicts(snapshot, DEFAULT_POLICY)
+    assert any("still open" in lim or "1 conflict" in lim for lim in findings[0].limitations)
+
+
 # ---- SYS-TEMP-001 --------------------------------------------------------
 
 
@@ -384,7 +468,10 @@ def test_ram_sizing_not_evaluated_when_no_row_has_the_value():
     assert findings[0].status == FindingStatus.NOT_EVALUATED
 
 
-def test_ram_sizing_reports_the_latest_recommendation_as_info():
+def test_ram_sizing_reports_the_latest_recommendation_as_info_when_no_actual_ram_known():
+    # EXA_SYSTEM_EVENTS defaults to empty (available, no rows) in make_snapshot
+    # -- this is the "can't compare, fall back to reporting the recommendation
+    # alone" path, same as this rule's original (pre-EXA_SYSTEM_EVENTS) behavior.
     from exadoctor.collectors.models import CollectionResult
 
     rows = [
@@ -397,6 +484,63 @@ def test_ram_sizing_reports_the_latest_recommendation_as_info():
     # Must report the *latest* row's value (250.0), not the first one (100.0).
     assert findings[0].evidence[0].value == 250.0
     assert "250.0 GiB" in findings[0].summary
+
+
+def test_ram_sizing_reports_info_when_system_events_explicitly_unavailable():
+    from exadoctor.collectors.models import CollectionResult
+
+    rows = [db_size_sample(DB_TIME, recommended_db_ram_size_avg_gib=250.0)]
+    snapshot = make_snapshot(
+        storage=CollectionResult("EXA_DB_SIZE_DAILY", "PUBLIC", True, None, rows),
+        system_events=unavailable_system_events(),
+    )
+    findings = evaluate_ram_sizing(snapshot, DEFAULT_POLICY)
+    assert findings[0].status == FindingStatus.INFO
+
+
+def test_ram_sizing_warns_when_actual_ram_is_below_the_recommendation():
+    from exadoctor.collectors.models import CollectionResult
+
+    rows = [db_size_sample(DB_TIME, recommended_db_ram_size_avg_gib=250.0)]
+    events = [system_event(DB_TIME, db_ram_size_gib=100.0)]
+    snapshot = make_snapshot(
+        storage=CollectionResult("EXA_DB_SIZE_DAILY", "PUBLIC", True, None, rows),
+        system_events=CollectionResult("EXA_SYSTEM_EVENTS", "PUBLIC", True, None, events),
+    )
+    findings = evaluate_ram_sizing(snapshot, DEFAULT_POLICY)
+    assert findings[0].status == FindingStatus.WARNING
+    assert "100.0 GiB" in findings[0].summary
+    assert "250.0 GiB" in findings[0].summary
+
+
+def test_ram_sizing_passes_when_actual_ram_meets_the_recommendation():
+    from exadoctor.collectors.models import CollectionResult
+
+    rows = [db_size_sample(DB_TIME, recommended_db_ram_size_avg_gib=100.0)]
+    events = [system_event(DB_TIME, db_ram_size_gib=250.0)]
+    snapshot = make_snapshot(
+        storage=CollectionResult("EXA_DB_SIZE_DAILY", "PUBLIC", True, None, rows),
+        system_events=CollectionResult("EXA_SYSTEM_EVENTS", "PUBLIC", True, None, events),
+    )
+    findings = evaluate_ram_sizing(snapshot, DEFAULT_POLICY)
+    assert findings[0].status == FindingStatus.PASS
+
+
+def test_ram_sizing_uses_the_most_recent_system_event_not_an_earlier_one():
+    from exadoctor.collectors.models import CollectionResult
+
+    rows = [db_size_sample(DB_TIME, recommended_db_ram_size_avg_gib=50.0)]
+    events = [
+        system_event(DB_TIME - timedelta(days=30), db_ram_size_gib=10.0),  # older, would WARN
+        system_event(DB_TIME, db_ram_size_gib=100.0),  # latest, actually provisioned now
+    ]
+    snapshot = make_snapshot(
+        storage=CollectionResult("EXA_DB_SIZE_DAILY", "PUBLIC", True, None, rows),
+        system_events=CollectionResult("EXA_SYSTEM_EVENTS", "PUBLIC", True, None, events),
+    )
+    findings = evaluate_ram_sizing(snapshot, DEFAULT_POLICY)
+    assert findings[0].status == FindingStatus.PASS
+    assert findings[0].evidence[0].value == 100.0
 
 
 # ---- SESSION-LONG-001 -----------------------------------------------------
