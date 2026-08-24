@@ -207,6 +207,23 @@ PUBLIC_SOURCES: tuple[SourceSpec, ...] = (
         privilege_required="SELECT ANY DICTIONARY + auditing enabled in EXAoperation",
     ),
     SourceSpec(
+        id="EXA_DBA_SESSIONS_LAST_DAY",
+        schema="EXA_STATISTICS",
+        table="EXA_DBA_SESSIONS_LAST_DAY",
+        required_columns=(
+            "SESSION_ID",
+            "LOGIN_TIME",
+            "LOGOUT_TIME",
+            "USER_NAME",
+            "HOST",
+            "SUCCESS",
+            "ERROR_CODE",
+            "ERROR_TEXT",
+            "CLUSTER_NAME",
+        ),
+        privilege_required="SELECT ANY DICTIONARY",
+    ),
+    SourceSpec(
         id="EXA_DBA_TRANSACTION_CONFLICTS",
         schema="EXA_STATISTICS",
         table="EXA_DBA_TRANSACTION_CONFLICTS",

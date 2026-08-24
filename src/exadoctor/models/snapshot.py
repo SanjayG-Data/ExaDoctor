@@ -26,6 +26,7 @@ from exadoctor.collectors.models import (
     MonitorDailySample,
     MonitorSample,
     Parameter,
+    SessionHistoryRecord,
     SessionInfo,
     SqlStatement,
     SystemEvent,
@@ -64,6 +65,7 @@ class Snapshot:
     metadata: CollectionResult[MetadataProperty]
     parameters: CollectionResult[Parameter]
     sessions: CollectionResult[SessionInfo]
+    session_history: CollectionResult[SessionHistoryRecord]
     workload: CollectionResult[SqlStatement]
     monitoring: CollectionResult[MonitorSample]
     monitor_daily: CollectionResult[MonitorDailySample]
@@ -92,6 +94,7 @@ class Snapshot:
             "metadata": self.metadata.to_dict(),
             "parameters": self.parameters.to_dict(),
             "sessions": self.sessions.to_dict(),
+            "session_history": self.session_history.to_dict(),
             "workload": self.workload.to_dict(),
             "monitoring": self.monitoring.to_dict(),
             "monitor_daily": self.monitor_daily.to_dict(),
@@ -113,6 +116,7 @@ class Snapshot:
             metadata=CollectionResult.from_dict(data["metadata"], MetadataProperty),
             parameters=CollectionResult.from_dict(data["parameters"], Parameter),
             sessions=CollectionResult.from_dict(data["sessions"], SessionInfo),
+            session_history=CollectionResult.from_dict(data["session_history"], SessionHistoryRecord),
             workload=CollectionResult.from_dict(data["workload"], SqlStatement),
             monitoring=CollectionResult.from_dict(data["monitoring"], MonitorSample),
             monitor_daily=CollectionResult.from_dict(data["monitor_daily"], MonitorDailySample),
@@ -143,6 +147,7 @@ def build_snapshot(gateway: SqlGateway, host: str, port: int) -> Snapshot:
         metadata=collected["metadata"],
         parameters=collected["parameters"],
         sessions=collected["sessions"],
+        session_history=collected["session_history"],
         workload=collected["workload"],
         monitoring=collected["monitoring"],
         monitor_daily=collected["monitor_daily"],

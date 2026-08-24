@@ -6,12 +6,14 @@ from rules_helpers import (
     make_snapshot,
     monitor_daily_sample,
     monitor_sample,
+    session_history_record,
     session_info,
     sql_statement,
     system_event,
     transaction_conflict,
     unavailable_monitor_daily,
     unavailable_monitoring,
+    unavailable_session_history,
     unavailable_sessions,
     unavailable_storage,
     unavailable_system_events,
@@ -25,6 +27,8 @@ from exadoctor.rules.public_core import (
     evaluate_command_share,
     evaluate_ram_sizing,
     evaluate_resource_trend,
+    evaluate_session_auth_failures,
+    evaluate_session_forced_termination,
     evaluate_session_long,
     evaluate_sql_fail,
     evaluate_sql_remote,
@@ -774,3 +778,115 @@ def test_session_long_boundary_exactly_at_threshold_is_flagged():
     snapshot = make_snapshot(sessions=CollectionResult("EXA_ALL_SESSIONS", "PUBLIC", True, None, rows))
     findings = evaluate_session_long(snapshot, DEFAULT_POLICY)
     assert findings[0].status == FindingStatus.INFO  # >= threshold, so exactly-at counts
+
+
+# ---- SESSION-AUTH-FAIL-001 -------------------------------------------------
+
+
+def test_session_auth_fail_not_evaluated_when_session_history_unavailable():
+    snapshot = make_snapshot(session_history=unavailable_session_history())
+    findings = evaluate_session_auth_failures(snapshot, DEFAULT_POLICY)
+    assert findings[0].status == FindingStatus.NOT_EVALUATED
+
+
+def test_session_auth_fail_passes_when_no_failures():
+    from exadoctor.collectors.models import CollectionResult
+
+    rows = [session_history_record(1, DB_TIME, success=True)]
+    snapshot = make_snapshot(session_history=CollectionResult("EXA_DBA_SESSIONS_LAST_DAY", "PUBLIC", True, None, rows))
+    findings = evaluate_session_auth_failures(snapshot, DEFAULT_POLICY)
+    assert findings[0].status == FindingStatus.PASS
+
+
+def test_session_auth_fail_below_recurrence_threshold_is_info_not_warning():
+    from exadoctor.collectors.models import CollectionResult
+
+    rows = [session_history_record(1, DB_TIME, success=False, user_name="alice", host="10.0.0.1", error_code="08004")]
+    snapshot = make_snapshot(session_history=CollectionResult("EXA_DBA_SESSIONS_LAST_DAY", "PUBLIC", True, None, rows))
+    findings = evaluate_session_auth_failures(snapshot, DEFAULT_POLICY)
+    assert findings[0].status == FindingStatus.INFO
+
+
+def test_session_auth_fail_at_recurrence_threshold_is_warning():
+    from exadoctor.collectors.models import CollectionResult
+
+    n = DEFAULT_POLICY.failed_login_recurrence_threshold
+    rows = [
+        session_history_record(i, DB_TIME, success=False, user_name="alice", host="10.0.0.1", error_code="08004")
+        for i in range(n)
+    ]
+    snapshot = make_snapshot(session_history=CollectionResult("EXA_DBA_SESSIONS_LAST_DAY", "PUBLIC", True, None, rows))
+    findings = evaluate_session_auth_failures(snapshot, DEFAULT_POLICY)
+    assert findings[0].status == FindingStatus.WARNING
+    assert findings[0].evidence[0].value == n
+
+
+def test_session_auth_fail_groups_by_user_and_host_separately():
+    from exadoctor.collectors.models import CollectionResult
+
+    rows = [
+        session_history_record(1, DB_TIME, success=False, user_name="alice", host="10.0.0.1"),
+        session_history_record(2, DB_TIME, success=False, user_name="bob", host="10.0.0.2"),
+    ]
+    snapshot = make_snapshot(session_history=CollectionResult("EXA_DBA_SESSIONS_LAST_DAY", "PUBLIC", True, None, rows))
+    findings = evaluate_session_auth_failures(snapshot, DEFAULT_POLICY)
+    assert len(findings) == 2
+    assert {f.status for f in findings} == {FindingStatus.INFO}
+
+
+# ---- SESSION-TERMINATED-001 -------------------------------------------------
+
+
+def test_session_terminated_not_evaluated_when_session_history_unavailable():
+    snapshot = make_snapshot(session_history=unavailable_session_history())
+    findings = evaluate_session_forced_termination(snapshot, DEFAULT_POLICY)
+    assert findings[0].status == FindingStatus.NOT_EVALUATED
+
+
+def test_session_terminated_passes_when_no_forced_terminations():
+    from exadoctor.collectors.models import CollectionResult
+
+    rows = [session_history_record(1, DB_TIME, success=True, error_code=None)]
+    snapshot = make_snapshot(session_history=CollectionResult("EXA_DBA_SESSIONS_LAST_DAY", "PUBLIC", True, None, rows))
+    findings = evaluate_session_forced_termination(snapshot, DEFAULT_POLICY)
+    assert findings[0].status == FindingStatus.PASS
+
+
+def test_session_terminated_ignores_failed_logins():
+    """A failed login (SUCCESS=FALSE) is SESSION-AUTH-FAIL-001's concern, not
+    this rule's -- a session that never opened was never "terminated"."""
+    from exadoctor.collectors.models import CollectionResult
+
+    rows = [session_history_record(1, DB_TIME, success=False, error_code="08004", error_text="bad password")]
+    snapshot = make_snapshot(session_history=CollectionResult("EXA_DBA_SESSIONS_LAST_DAY", "PUBLIC", True, None, rows))
+    findings = evaluate_session_forced_termination(snapshot, DEFAULT_POLICY)
+    assert findings[0].status == FindingStatus.PASS
+
+
+def test_session_terminated_below_recurrence_threshold_is_info_not_warning():
+    from exadoctor.collectors.models import CollectionResult
+
+    rows = [
+        session_history_record(
+            1, DB_TIME, success=True, error_code="R0033", error_text="Connection lost after idle timeout."
+        )
+    ]
+    snapshot = make_snapshot(session_history=CollectionResult("EXA_DBA_SESSIONS_LAST_DAY", "PUBLIC", True, None, rows))
+    findings = evaluate_session_forced_termination(snapshot, DEFAULT_POLICY)
+    assert findings[0].status == FindingStatus.INFO
+
+
+def test_session_terminated_at_recurrence_threshold_is_warning():
+    from exadoctor.collectors.models import CollectionResult
+
+    n = DEFAULT_POLICY.forced_termination_recurrence_threshold
+    rows = [
+        session_history_record(
+            i, DB_TIME, success=True, error_code="R0033", error_text="Connection lost after idle timeout."
+        )
+        for i in range(n)
+    ]
+    snapshot = make_snapshot(session_history=CollectionResult("EXA_DBA_SESSIONS_LAST_DAY", "PUBLIC", True, None, rows))
+    findings = evaluate_session_forced_termination(snapshot, DEFAULT_POLICY)
+    assert findings[0].status == FindingStatus.WARNING
+    assert findings[0].evidence[0].value == n

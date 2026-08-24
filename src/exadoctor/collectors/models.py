@@ -288,6 +288,33 @@ class TransactionConflict:
 
 
 @dataclass
+class SessionHistoryRecord:
+    session_id: int
+    login_time: datetime | None
+    logout_time: datetime | None
+    user_name: str | None
+    host: str | None
+    success: bool
+    error_code: str | None
+    error_text: str | None
+    cluster_name: str | None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> SessionHistoryRecord:
+        return cls(
+            session_id=data["session_id"],
+            login_time=_parse_iso_datetime(data["login_time"]),
+            logout_time=_parse_iso_datetime(data["logout_time"]),
+            user_name=data["user_name"],
+            host=data["host"],
+            success=data["success"],
+            error_code=data["error_code"],
+            error_text=data["error_text"],
+            cluster_name=data["cluster_name"],
+        )
+
+
+@dataclass
 class UsageSample:
     cluster_name: str | None
     measure_time: datetime

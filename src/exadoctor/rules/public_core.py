@@ -1422,6 +1422,210 @@ def evaluate_session_long(snapshot: Snapshot, policy: RulePolicy) -> list[Findin
     return findings
 
 
+def evaluate_session_auth_failures(snapshot: Snapshot, policy: RulePolicy) -> list[Finding]:
+    """Reports failed login attempts from EXA_DBA_SESSIONS_LAST_DAY --
+    invisible to every other rule here, since EXA_ALL_SESSIONS/EXA_DBA_
+    SESSIONS only ever list currently-open (i.e. successfully authenticated)
+    sessions. A failed login never opens a session at all, so it can only be
+    seen in this table's own SUCCESS column.
+
+    Grouped by (user_name, host) and ranked by count, same shape as
+    SQL-FAIL-001: an isolated failure is likely a typo, but repeated
+    failures from the same user/host pair within the window is the
+    signature of a stuck application retrying a stale credential, or a
+    brute-force attempt.
+    """
+    result = snapshot.session_history
+    if not result.available:
+        return [
+            not_evaluated(
+                "SESSION-AUTH-FAIL-001",
+                "Failed login attempts",
+                "sessions",
+                result.reason or "EXA_DBA_SESSIONS_LAST_DAY unavailable",
+                requirements=["EXA_DBA_SESSIONS_LAST_DAY"],
+            )
+        ]
+
+    failed = [r for r in result.rows if not r.success]
+    if not failed:
+        return [
+            Finding(
+                id="SESSION-AUTH-FAIL-001",
+                title="No failed login attempts",
+                category="sessions",
+                status=FindingStatus.PASS,
+                summary=f"No failed login attempts among {len(result.rows)} login attempt(s) in the last day.",
+                confidence="HIGH",
+                requirements=["EXA_DBA_SESSIONS_LAST_DAY"],
+            )
+        ]
+
+    groups: dict[tuple[str | None, str | None], list] = defaultdict(list)
+    for r in failed:
+        groups[(r.user_name, r.host)].append(r)
+
+    ranked = sorted(groups.items(), key=lambda kv: len(kv[1]), reverse=True)
+    findings: list[Finding] = []
+    for (user_name, host), items in ranked[: policy.max_findings_per_rule]:
+        severity = FindingStatus.WARNING if len(items) >= policy.failed_login_recurrence_threshold else FindingStatus.INFO
+        with_time = [i for i in items if i.login_time is not None]
+        latest = max(with_time, key=lambda i: i.login_time) if with_time else items[0]
+        findings.append(
+            Finding(
+                id="SESSION-AUTH-FAIL-001",
+                title="Repeated failed login attempts" if severity == FindingStatus.WARNING else "Failed login attempt",
+                category="sessions",
+                status=severity,
+                summary=(
+                    f"{len(items)} failed login attempt(s) for user={user_name!r} from host={host!r}"
+                    f"{f'; latest error_code={latest.error_code!r}: {latest.error_text}' if latest.error_code else ''}."
+                ),
+                evidence=[
+                    Evidence(
+                        source="EXA_DBA_SESSIONS_LAST_DAY",
+                        stability="PUBLIC",
+                        metric="FAILED_LOGIN_COUNT",
+                        value=len(items),
+                        unit="occurrences",
+                        timestamp=latest.login_time,
+                        context=f"user={user_name} host={host}",
+                    )
+                ],
+                recommendation=(
+                    "Multiple failed logins from the same user/host may indicate a misconfigured application "
+                    "retrying a stale credential, or an unauthorized access attempt -- review the source."
+                    if severity == FindingStatus.WARNING
+                    else "Isolated failed login; may be expected (e.g. a user mistyping a password)."
+                ),
+                confidence="HIGH",
+                requirements=["EXA_DBA_SESSIONS_LAST_DAY"],
+                limitations=["EXA_DBA_SESSIONS_LAST_DAY is a 24-hour rolling window; older attempts are not visible."],
+                documentation=["ExaDoctor policy: recurrence threshold distinguishing WARNING from INFO"],
+            )
+        )
+
+    if len(ranked) > policy.max_findings_per_rule:
+        skipped = len(ranked) - policy.max_findings_per_rule
+        findings.append(
+            Finding(
+                id="SESSION-AUTH-FAIL-001",
+                title="Additional failed-login groups not shown",
+                category="sessions",
+                status=FindingStatus.INFO,
+                summary=f"{skipped} additional user/host group(s) with failed logins were not reported individually (capped at {policy.max_findings_per_rule}).",
+                confidence="HIGH",
+                documentation=["ExaDoctor policy: per-rule finding cap"],
+            )
+        )
+    return findings
+
+
+def evaluate_session_forced_termination(snapshot: Snapshot, policy: RulePolicy) -> list[Finding]:
+    """Reports sessions from EXA_DBA_SESSIONS_LAST_DAY that logged in
+    successfully but were forcefully terminated (ERROR_CODE populated on an
+    otherwise-successful login) -- e.g. an idle timeout, an admin KILL
+    SESSION, or a network drop. EXA_ALL_SESSIONS/EXA_DBA_SESSIONS cannot see
+    this either: once a session ends, it simply disappears from those
+    tables, successful or not.
+
+    Grouped by ERROR_CODE, same recurrence framing as SQL-FAIL-001: one
+    idle-timeout is routine; many with the same code suggests a systemic
+    connection-handling issue rather than an isolated event.
+    """
+    result = snapshot.session_history
+    if not result.available:
+        return [
+            not_evaluated(
+                "SESSION-TERMINATED-001",
+                "Forced session termination",
+                "sessions",
+                result.reason or "EXA_DBA_SESSIONS_LAST_DAY unavailable",
+                requirements=["EXA_DBA_SESSIONS_LAST_DAY"],
+            )
+        ]
+
+    terminated = [r for r in result.rows if r.success and r.error_code]
+    if not terminated:
+        return [
+            Finding(
+                id="SESSION-TERMINATED-001",
+                title="No forced session terminations",
+                category="sessions",
+                status=FindingStatus.PASS,
+                summary=f"No forcefully terminated sessions among {len(result.rows)} session(s) in the last day.",
+                confidence="HIGH",
+                requirements=["EXA_DBA_SESSIONS_LAST_DAY"],
+            )
+        ]
+
+    groups: dict[str, list] = defaultdict(list)
+    for r in terminated:
+        groups[r.error_code].append(r)
+
+    ranked = sorted(groups.items(), key=lambda kv: len(kv[1]), reverse=True)
+    findings: list[Finding] = []
+    for error_code, items in ranked[: policy.max_findings_per_rule]:
+        severity = (
+            FindingStatus.WARNING if len(items) >= policy.forced_termination_recurrence_threshold else FindingStatus.INFO
+        )
+        with_time = [i for i in items if i.logout_time is not None]
+        latest = max(with_time, key=lambda i: i.logout_time) if with_time else items[0]
+        findings.append(
+            Finding(
+                id="SESSION-TERMINATED-001",
+                title="Recurring forced session terminations" if severity == FindingStatus.WARNING else "Forced session termination",
+                category="sessions",
+                status=severity,
+                summary=(
+                    f"{len(items)} session(s) forcefully terminated with error_code={error_code!r}: {latest.error_text}"
+                ),
+                evidence=[
+                    Evidence(
+                        source="EXA_DBA_SESSIONS_LAST_DAY",
+                        stability="PUBLIC",
+                        metric="FORCED_TERMINATION_COUNT",
+                        value=len(items),
+                        unit="occurrences",
+                        timestamp=latest.logout_time,
+                        context=f"error_code={error_code}",
+                        session_id=latest.session_id,
+                    )
+                ],
+                recommendation=(
+                    "A recurring forced-termination code suggests a systemic issue (e.g. an idle timeout that's "
+                    "too aggressive for this workload, or an application not closing connections) rather than "
+                    "an isolated event -- review connection handling and timeout settings."
+                    if severity == FindingStatus.WARNING
+                    else "Occasional forced terminations (e.g. a single idle timeout) are routine, not inherently a fault."
+                ),
+                confidence="MEDIUM",
+                requirements=["EXA_DBA_SESSIONS_LAST_DAY"],
+                limitations=[
+                    "EXA_DBA_SESSIONS_LAST_DAY is a 24-hour rolling window; older terminations are not visible.",
+                    "ERROR_CODE/ERROR_TEXT come from Exasol's own session termination reporting; ExaDoctor does "
+                    "not further classify which codes are benign vs. concerning.",
+                ],
+                documentation=["ExaDoctor policy: recurrence threshold distinguishing WARNING from INFO"],
+            )
+        )
+
+    if len(ranked) > policy.max_findings_per_rule:
+        skipped = len(ranked) - policy.max_findings_per_rule
+        findings.append(
+            Finding(
+                id="SESSION-TERMINATED-001",
+                title="Additional forced-termination groups not shown",
+                category="sessions",
+                status=FindingStatus.INFO,
+                summary=f"{skipped} additional error_code group(s) were not reported individually (capped at {policy.max_findings_per_rule}).",
+                confidence="HIGH",
+                documentation=["ExaDoctor policy: per-rule finding cap"],
+            )
+        )
+    return findings
+
+
 PUBLIC_CORE_RULES: list[Rule] = [
     Rule(id="SYS-SWAP-001", title="Swap activity detected", category="system", evaluate=evaluate_sys_swap),
     Rule(id="SQL-FAIL-001", title="Repeated SQL errors", category="workload", evaluate=evaluate_sql_fail),
@@ -1435,4 +1639,6 @@ PUBLIC_CORE_RULES: list[Rule] = [
     Rule(id="STORAGE-GROWTH-001", title="Unusual database growth", category="capacity", evaluate=evaluate_storage_growth),
     Rule(id="SYS-RAM-SIZING-001", title="Exasol-recommended DB RAM", category="capacity", evaluate=evaluate_ram_sizing),
     Rule(id="SESSION-LONG-001", title="Long-lived session", category="sessions", evaluate=evaluate_session_long),
+    Rule(id="SESSION-AUTH-FAIL-001", title="Failed login attempts", category="sessions", evaluate=evaluate_session_auth_failures),
+    Rule(id="SESSION-TERMINATED-001", title="Forced session termination", category="sessions", evaluate=evaluate_session_forced_termination),
 ]

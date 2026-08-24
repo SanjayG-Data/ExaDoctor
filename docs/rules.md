@@ -20,8 +20,8 @@ command's own code path touch it").
 
 | Command | Tables it reads |
 |---|---|
-| `capabilities` | Probes existence/access on every registered public source (`exadoctor.capabilities.sources.PUBLIC_SOURCES`) — 14 tables in total, listed in [`capability-matrix.md`](capability-matrix.md). Most of these are checked for availability only; not all are actually collected elsewhere. |
-| `scan` | `EXA_METADATA`, `EXA_PARAMETERS`, `EXA_ALL_SESSIONS`, `EXA_SQL_LAST_DAY`, `EXA_MONITOR_LAST_DAY`, `EXA_MONITOR_DAILY`, `EXA_DB_SIZE_DAILY`, `EXA_USAGE_LAST_DAY`, `EXA_SYSTEM_EVENTS`, `EXA_DBA_TRANSACTION_CONFLICTS` — one collector each, see `exadoctor.models.snapshot.build_snapshot`. |
+| `capabilities` | Probes existence/access on every registered public source (`exadoctor.capabilities.sources.PUBLIC_SOURCES`) — 15 tables in total, listed in [`capability-matrix.md`](capability-matrix.md). Most of these are checked for availability only; not all are actually collected elsewhere. |
+| `scan` | `EXA_METADATA`, `EXA_PARAMETERS`, `EXA_ALL_SESSIONS`, `EXA_DBA_SESSIONS_LAST_DAY`, `EXA_SQL_LAST_DAY`, `EXA_MONITOR_LAST_DAY`, `EXA_MONITOR_DAILY`, `EXA_DB_SIZE_DAILY`, `EXA_USAGE_LAST_DAY`, `EXA_SYSTEM_EVENTS`, `EXA_DBA_TRANSACTION_CONFLICTS` — one collector each, see `exadoctor.models.snapshot.build_snapshot`. |
 | `baseline create`/`compare`/`history` | Same collection as `scan` (`build_snapshot` is reused), but `compare`/`history` only ever diff three of those fields: workload duration by class and TEMP usage (both from `EXA_SQL_LAST_DAY`) and storage size (from `EXA_DB_SIZE_DAILY`). The rest of the snapshot is saved to the local baseline store but not compared. |
 | `query` | `EXA_SQL_LAST_DAY` (that one statement's own row) plus `EXA_DBA_PROFILE_LAST_DAY`/`EXA_DBA_PROFILE_RUNNING` (its profile parts, whichever source actually has rows for that session/statement). |
 
@@ -35,16 +35,16 @@ similarly probed but not yet consumed by any rule. `EXA_DBA_TRANSACTION_CONFLICT
 
 **Exasol documents 31 statistical system tables in total** (see
 [the official list](https://docs.exasol.com/db/latest/sql_references/system_tables/statistical_system_tables.htm))
-— ExaDoctor uses 14 of them. Every metric family (`SQL`, `MONITOR`,
+— ExaDoctor uses 15 of them. Every metric family (`SQL`, `MONITOR`,
 `DB_SIZE`, `USAGE`) also has `_HOURLY`/`_DAILY`/`_MONTHLY` variants beyond
 the `_LAST_DAY` one this project used almost exclusively at first;
 `EXA_MONITOR_DAILY` (used by `SYS-RESOURCE-TREND-001` below) was the
-first of those to get used. Genuinely unexplored areas still remain,
-most notably real session *history* (`EXA_DBA_SESSIONS_LAST_DAY` —
-includes closed/failed logins, unlike the currently-open-only
-`EXA_ALL_SESSIONS`) and impersonation tracking (`EXA_DBA_AUDIT_IMPERSONATION`/
-`EXA_DBA_IMPERSONATION_LAST_DAY`) — see `IMPLEMENTATION_HISTORY.md` for
-the full audit.
+first of those to get used. Real session *history* (`EXA_DBA_SESSIONS_LAST_DAY`
+— includes closed/failed logins, unlike the currently-open-only
+`EXA_ALL_SESSIONS`) is now used too, by `SESSION-AUTH-FAIL-001` and
+`SESSION-TERMINATED-001` below. Impersonation tracking
+(`EXA_DBA_AUDIT_IMPERSONATION`/`EXA_DBA_IMPERSONATION_LAST_DAY`) remains
+unexplored — see `IMPLEMENTATION_HISTORY.md` for the full audit.
 
 ## `exadoctor scan` — public-core rules
 
@@ -62,6 +62,8 @@ the full audit.
 | `STORAGE-GROWTH-001` | `EXA_DB_SIZE_DAILY` | Compares the latest daily `STORAGE_SIZE_AVG` to the trailing-history median; flags growth beyond a policy-defined ratio. Trend-relative to the instance's own history, not an absolute capacity judgement. |
 | `SYS-RAM-SIZING-001` | `EXA_DB_SIZE_DAILY` + `EXA_SYSTEM_EVENTS` | Compares Exasol's own `RECOMMENDED_DB_RAM_SIZE_AVG` (the column Exasol's [sizing documentation](https://docs.exasol.com/db/latest/administration/on-premise/sizing.htm) itself names as the way to check DB RAM sizing on a running system, and whose formula already bakes in TEMP headroom) against the cluster's actually-provisioned `DB_RAM_SIZE`. `WARNING` if provisioned RAM is below the recommendation, `PASS` if it meets or exceeds it. Falls back to `INFO` (reporting only the recommendation) if `EXA_SYSTEM_EVENTS` is unavailable. |
 | `SESSION-LONG-001` | `EXA_ALL_SESSIONS` + `Snapshot.database_time` | Session age = `database_time - LOGIN_TIME`, using the Exasol server's own clock (never the collecting host's — see `docs/architecture.md` for why that distinction is load-bearing). `NOT_EVALUATED` if `database_time` couldn't be determined, rather than silently using the wrong clock. |
+| `SESSION-AUTH-FAIL-001` | `EXA_DBA_SESSIONS_LAST_DAY` | Groups failed login attempts (`SUCCESS = FALSE`) by `(user_name, host)`. `WARNING` at or above a policy-defined recurrence threshold, `INFO` below it — an isolated failure may just be a typo. Invisible to any other rule here: `EXA_ALL_SESSIONS`/`EXA_DBA_SESSIONS` only ever list sessions that successfully opened, so a failed login never appears there at all. |
+| `SESSION-TERMINATED-001` | `EXA_DBA_SESSIONS_LAST_DAY` | Groups sessions that logged in successfully but were forcefully terminated (`SUCCESS = TRUE` with `ERROR_CODE` set — e.g. an idle timeout) by `ERROR_CODE`. Same recurrence framing as `SQL-FAIL-001`/`SESSION-AUTH-FAIL-001`: one occurrence is routine, many with the same code suggests a systemic connection-handling issue. Also invisible elsewhere — a session that's already ended has simply disappeared from `EXA_ALL_SESSIONS`, successful termination or not. |
 
 ## `exadoctor query` — deep per-statement rules
 

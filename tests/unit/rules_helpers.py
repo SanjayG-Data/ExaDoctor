@@ -11,6 +11,7 @@ from exadoctor.collectors.models import (
     MonitorDailySample,
     MonitorSample,
     Parameter,
+    SessionHistoryRecord,
     SessionInfo,
     SqlStatement,
     SystemEvent,
@@ -37,6 +38,7 @@ def make_snapshot(
     workload: CollectionResult[SqlStatement] | None = None,
     storage: CollectionResult[DbSizeDailySample] | None = None,
     sessions: CollectionResult[SessionInfo] | None = None,
+    session_history: CollectionResult[SessionHistoryRecord] | None = None,
     system_events: CollectionResult[SystemEvent] | None = None,
     transaction_conflicts: CollectionResult[TransactionConflict] | None = None,
     database_time: datetime | None = DB_TIME,
@@ -48,6 +50,7 @@ def make_snapshot(
         metadata=_empty("EXA_METADATA"),
         parameters=_empty("EXA_PARAMETERS"),
         sessions=sessions if sessions is not None else _empty("EXA_ALL_SESSIONS"),
+        session_history=session_history if session_history is not None else _empty("EXA_DBA_SESSIONS_LAST_DAY"),
         workload=workload if workload is not None else _empty("EXA_SQL_LAST_DAY"),
         monitoring=monitoring if monitoring is not None else _empty("EXA_MONITOR_LAST_DAY"),
         monitor_daily=monitor_daily if monitor_daily is not None else _empty("EXA_MONITOR_DAILY"),
@@ -78,6 +81,10 @@ def unavailable_monitor_daily() -> CollectionResult[MonitorDailySample]:
 
 def unavailable_sessions() -> CollectionResult[SessionInfo]:
     return _unavailable("EXA_ALL_SESSIONS")
+
+
+def unavailable_session_history() -> CollectionResult[SessionHistoryRecord]:
+    return _unavailable("EXA_DBA_SESSIONS_LAST_DAY")
 
 
 def unavailable_system_events() -> CollectionResult[SystemEvent]:
@@ -183,6 +190,24 @@ def transaction_conflict(start_time: datetime, **kwargs) -> TransactionConflict:
     )
     defaults.update(kwargs)
     return TransactionConflict(**defaults)
+
+
+def session_history_record(session_id: int, login_time: datetime, **kwargs) -> SessionHistoryRecord:
+    from datetime import timedelta
+
+    defaults = dict(
+        session_id=session_id,
+        login_time=login_time,
+        logout_time=login_time + timedelta(minutes=5),
+        user_name="SYS",
+        host="127.0.0.1",
+        success=True,
+        error_code=None,
+        error_text=None,
+        cluster_name="MAIN",
+    )
+    defaults.update(kwargs)
+    return SessionHistoryRecord(**defaults)
 
 
 def session_info(session_id: int, **kwargs) -> SessionInfo:

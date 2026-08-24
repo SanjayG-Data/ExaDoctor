@@ -12,6 +12,7 @@ from exadoctor.collectors.models import (
     MetadataProperty,
     MonitorSample,
     Parameter,
+    SessionHistoryRecord,
     SessionInfo,
     SqlStatement,
     SystemEvent,
@@ -70,6 +71,25 @@ def _sample_snapshot() -> Snapshot:
                 temp_db_ram_mib=66.9,
                 persistent_db_ram_mib=0.0,
                 consumer_group="SYS_CONSUMER_GROUP",
+                cluster_name="MAIN",
+            )
+        ],
+    )
+    session_history = CollectionResult(
+        source_id="EXA_DBA_SESSIONS_LAST_DAY",
+        stability="PUBLIC",
+        available=True,
+        reason=None,
+        rows=[
+            SessionHistoryRecord(
+                session_id=1874216507191132160,
+                login_time=datetime(2026, 8, 22, 11, 49, 6, 292000),  # naive: real Exasol TIMESTAMP
+                logout_time=datetime(2026, 8, 23, 11, 49, 7, 54000),  # naive: real Exasol TIMESTAMP
+                user_name="SYS",
+                host="127.0.0.1",
+                success=True,
+                error_code="R0033",
+                error_text="Connection lost after idle timeout.",
                 cluster_name="MAIN",
             )
         ],
@@ -172,6 +192,7 @@ def _sample_snapshot() -> Snapshot:
         metadata=metadata,
         parameters=parameters,
         sessions=sessions,
+        session_history=session_history,
         workload=workload,
         monitoring=monitoring,
         monitor_daily=monitor_daily,

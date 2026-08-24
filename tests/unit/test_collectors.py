@@ -18,6 +18,7 @@ from exadoctor.collectors import (
     monitor_daily,
     monitoring,
     parameters,
+    session_history,
     sessions,
     storage,
     system_events,
@@ -267,6 +268,33 @@ def test_collect_transaction_conflicts_maps_rows_including_open_conflict() -> No
     assert result.rows[1].stop_time is None
 
 
+def test_collect_session_history_maps_rows() -> None:
+    gateway = ScriptedGateway(
+        {
+            session_history.SQL: QueryResult(
+                columns=[],
+                rows=[
+                    (
+                        1874216507191132160,
+                        datetime(2026, 8, 22, 11, 49, 6, 292000),
+                        datetime(2026, 8, 23, 11, 49, 7, 54000),
+                        "SYS",
+                        "127.0.0.1",
+                        True,
+                        "R0033",
+                        "Connection lost after idle timeout.",
+                        "MAIN",
+                    )
+                ],
+            )
+        }
+    )
+    result = session_history.collect_session_history(gateway)
+    assert result.rows[0].session_id == 1874216507191132160
+    assert result.rows[0].success is True
+    assert result.rows[0].error_code == "R0033"
+
+
 def test_collector_degrades_gracefully_on_query_failure() -> None:
     gateway = ScriptedGateway({metadata.SQL: ConnectionFailedError("object EXA_METADATA not found")})
     result = metadata.collect_metadata(gateway)
@@ -294,6 +322,7 @@ def test_collect_all_survives_one_failing_collector() -> None:
             metadata.SQL: ConnectionFailedError("boom"),
             parameters.SQL: QueryResult(columns=[], rows=[]),
             sessions.SQL: QueryResult(columns=[], rows=[]),
+            session_history.SQL: QueryResult(columns=[], rows=[]),
             workload.SQL: QueryResult(columns=[], rows=[]),
             monitoring.SQL: QueryResult(columns=[], rows=[]),
             usage.SQL: QueryResult(columns=[], rows=[]),
@@ -320,6 +349,7 @@ def test_collect_all_survives_one_failing_collector() -> None:
         "metadata",
         "parameters",
         "sessions",
+        "session_history",
         "workload",
         "monitoring",
         "monitor_daily",

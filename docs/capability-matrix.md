@@ -19,6 +19,7 @@ explicitly out of scope for this build — see
 | `EXA_PARAMETERS` | Yes | `PARAMETER_NAME`, `SESSION_VALUE`, `SYSTEM_VALUE` | OK (30 rows) | No `IS_STATIC`-style classification column. |
 | `EXA_ALL_SESSIONS` | Yes | `SESSION_ID`, `USER_NAME`, `STATUS`, `COMMAND_NAME`, `STMT_ID`, `DURATION`, `QUERY_TIMEOUT`, `ACTIVITY`, `TEMP_DB_RAM`, `PERSISTENT_DB_RAM`, `LOGIN_TIME`, `CLIENT`, `DRIVER`, `ENCRYPTED`, `CONSUMER_GROUP`, `NICE`, `RESOURCES`, `CLUSTER_NAME` | OK (4 rows) | No `SQL_TEXT` column. `DURATION` is `VARCHAR`, not numeric — the collector casts it. |
 | `EXA_DBA_SESSIONS` | Yes | All `EXA_ALL_SESSIONS` columns plus `EFFECTIVE_USER`, `HOST`, `OS_USER`, `OS_NAME`, `SCOPE_SCHEMA`, `SQL_TEXT` (`VARCHAR(2000000)`) | OK (4 rows) as `SYS`; requires `SELECT ANY DICTIONARY` for non-privileged users | Exposes raw `SQL_TEXT` — excluded from every collector's column list by design; see [`security.md`](security.md). |
+| `EXA_DBA_SESSIONS_LAST_DAY` | Yes | `SESSION_ID`, `LOGIN_TIME`, `LOGOUT_TIME`, `USER_NAME`, `CLIENT`, `DRIVER`, `ENCRYPTED`, `HOST`, `OS_USER`, `OS_NAME`, `SUCCESS`, `ERROR_CODE`, `ERROR_TEXT`, `CLUSTER_NAME` | OK (34 rows locally, spanning the last day) | Real login/logout *history*, including sessions that have already closed — structurally different from `EXA_ALL_SESSIONS`/`EXA_DBA_SESSIONS` (currently-open sessions only). `SUCCESS = FALSE` marks a failed login attempt; `SUCCESS = TRUE` with `ERROR_CODE` set marks a forced termination of an otherwise-successful session (e.g. `R0033`/"Connection lost after idle timeout" observed live). Basis for `SESSION-AUTH-FAIL-001` and `SESSION-TERMINATED-001`. Confirmed readable both as `SYS` here and as a real non-`sys` Exasol SaaS user with no explicit grant observed for it. |
 
 ## Statistics schema (`EXA_STATISTICS`)
 
@@ -65,3 +66,5 @@ actually see — don't assume this table's results transfer.
 | Audit SQL analysis | Conditional | `EXA_DBA_AUDIT_SQL`, requires auditing enabled |
 | Transaction conflict analysis | Available (privilege-dependent) | `EXA_DBA_TRANSACTION_CONFLICTS` (`SQL-CONFLICT-001`) |
 | DB RAM sizing vs. Exasol's own recommendation | Available | `EXA_DB_SIZE_DAILY` + `EXA_SYSTEM_EVENTS` (`SYS-RAM-SIZING-001`) |
+| Failed login detection | Available (privilege-dependent) | `EXA_DBA_SESSIONS_LAST_DAY` (`SESSION-AUTH-FAIL-001`) |
+| Forced session termination detection | Available (privilege-dependent) | `EXA_DBA_SESSIONS_LAST_DAY` (`SESSION-TERMINATED-001`) |

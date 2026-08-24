@@ -60,6 +60,17 @@ class RulePolicy:
     # of the four: even a small amount of newly-appearing swap is worth a
     # WARNING, not just a large one.
     resource_trend_min_absolute_swap_mib_per_sec: float = 1.0
+    # SESSION-AUTH-FAIL-001: a single failed login is often just a typo, but
+    # this many failures from the same user/host pair within the window
+    # looks like a stuck application retrying a stale credential, or a
+    # brute-force attempt -- either way, worth a WARNING rather than INFO.
+    failed_login_recurrence_threshold: int = 3
+    # SESSION-TERMINATED-001: same recurrence framing as SQL-FAIL-001 --
+    # occasional forced terminations (e.g. one idle-timeout) are routine;
+    # many with the same error_code suggests a systemic connection-handling
+    # issue (misconfigured timeout, app not closing connections) worth
+    # flagging.
+    forced_termination_recurrence_threshold: int = 3
 
 
 DEFAULT_POLICY = RulePolicy()
