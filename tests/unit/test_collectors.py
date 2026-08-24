@@ -15,6 +15,7 @@ import pytest
 
 from exadoctor.collectors import (
     metadata,
+    monitor_daily,
     monitoring,
     parameters,
     sessions,
@@ -167,6 +168,38 @@ def test_collect_db_size_daily_rejects_non_positive_window() -> None:
         storage.collect_db_size_daily(ScriptedGateway({}), window_days=0)
 
 
+def test_collect_monitor_daily_uses_default_window_in_sql() -> None:
+    captured_sql = {}
+
+    class CapturingGateway:
+        def execute(self, sql: str) -> QueryResult:
+            captured_sql["sql"] = sql
+            return QueryResult(columns=[], rows=[])
+
+    monitor_daily.collect_monitor_daily(CapturingGateway())
+    assert "INTERVAL '90' DAY" in captured_sql["sql"]
+
+
+def test_collect_monitor_daily_rejects_non_positive_window() -> None:
+    with pytest.raises(ValueError):
+        monitor_daily.collect_monitor_daily(ScriptedGateway({}), window_days=0)
+
+
+def test_collect_monitor_daily_maps_rows() -> None:
+    class CapturingGateway:
+        def execute(self, sql: str) -> QueryResult:
+            return QueryResult(
+                columns=[],
+                rows=[("MAIN", datetime(2026, 8, 22, 0, 0), Decimal("12.3"), Decimal("40.4"), Decimal("1.1"), Decimal("0.0"))],
+            )
+
+    result = monitor_daily.collect_monitor_daily(CapturingGateway())
+    assert result.rows[0].cpu_avg_percent == 12.3
+    assert result.rows[0].temp_db_ram_avg_mib == 40.4
+    assert result.rows[0].net_avg_mib_per_sec == 1.1
+    assert result.rows[0].swap_avg_mib_per_sec == 0.0
+
+
 def test_collect_system_events_maps_rows() -> None:
     gateway = ScriptedGateway(
         {
@@ -267,12 +300,16 @@ def test_collect_all_survives_one_failing_collector() -> None:
             system_events.SQL: QueryResult(columns=[], rows=[]),
         }
     )
-    # storage.py and transaction_conflicts.py both build their SQL
-    # dynamically (window clause), so match on a substring for those instead
-    # of an exact-string key.
+    # storage.py, transaction_conflicts.py, and monitor_daily.py all build
+    # their SQL dynamically (window clause), so match on a substring for
+    # those instead of an exact-string key.
     class GatewayWithStorage(ScriptedGateway):
         def execute(self, sql: str) -> QueryResult:
-            if "EXA_DB_SIZE_DAILY" in sql or "EXA_DBA_TRANSACTION_CONFLICTS" in sql:
+            if (
+                "EXA_DB_SIZE_DAILY" in sql
+                or "EXA_DBA_TRANSACTION_CONFLICTS" in sql
+                or "EXA_MONITOR_DAILY" in sql
+            ):
                 return QueryResult(columns=[], rows=[])
             return super().execute(sql)
 
@@ -285,6 +322,7 @@ def test_collect_all_survives_one_failing_collector() -> None:
         "sessions",
         "workload",
         "monitoring",
+        "monitor_daily",
         "storage",
         "usage",
         "system_events",

@@ -11,6 +11,7 @@ from typing import Any
 
 from exadoctor.collectors.metadata import collect_metadata
 from exadoctor.collectors.models import CollectionResult
+from exadoctor.collectors.monitor_daily import collect_monitor_daily
 from exadoctor.collectors.monitoring import collect_monitor_last_day
 from exadoctor.collectors.parameters import collect_parameters
 from exadoctor.collectors.sessions import collect_sessions
@@ -29,6 +30,7 @@ def collect_all(gateway: SqlGateway) -> dict[str, CollectionResult[Any]]:
         "sessions": collect_sessions(gateway),
         "workload": collect_sql_last_day(gateway),
         "monitoring": collect_monitor_last_day(gateway),
+        "monitor_daily": collect_monitor_daily(gateway),
         "storage": collect_db_size_daily(gateway),
         "usage": collect_usage_last_day(gateway),
         "system_events": collect_system_events(gateway),

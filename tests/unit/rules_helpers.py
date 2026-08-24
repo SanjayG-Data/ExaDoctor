@@ -8,6 +8,7 @@ from exadoctor.collectors.models import (
     CollectionResult,
     DbSizeDailySample,
     MetadataProperty,
+    MonitorDailySample,
     MonitorSample,
     Parameter,
     SessionInfo,
@@ -32,6 +33,7 @@ def _unavailable(source_id: str, reason: str = "simulated unavailable") -> Colle
 def make_snapshot(
     *,
     monitoring: CollectionResult[MonitorSample] | None = None,
+    monitor_daily: CollectionResult[MonitorDailySample] | None = None,
     workload: CollectionResult[SqlStatement] | None = None,
     storage: CollectionResult[DbSizeDailySample] | None = None,
     sessions: CollectionResult[SessionInfo] | None = None,
@@ -48,6 +50,7 @@ def make_snapshot(
         sessions=sessions if sessions is not None else _empty("EXA_ALL_SESSIONS"),
         workload=workload if workload is not None else _empty("EXA_SQL_LAST_DAY"),
         monitoring=monitoring if monitoring is not None else _empty("EXA_MONITOR_LAST_DAY"),
+        monitor_daily=monitor_daily if monitor_daily is not None else _empty("EXA_MONITOR_DAILY"),
         storage=storage if storage is not None else _empty("EXA_DB_SIZE_DAILY"),
         usage=_empty("EXA_USAGE_LAST_DAY"),
         system_events=system_events if system_events is not None else _empty("EXA_SYSTEM_EVENTS"),
@@ -67,6 +70,10 @@ def unavailable_workload() -> CollectionResult[SqlStatement]:
 
 def unavailable_storage() -> CollectionResult[DbSizeDailySample]:
     return _unavailable("EXA_DB_SIZE_DAILY")
+
+
+def unavailable_monitor_daily() -> CollectionResult[MonitorDailySample]:
+    return _unavailable("EXA_MONITOR_DAILY")
 
 
 def unavailable_sessions() -> CollectionResult[SessionInfo]:
@@ -118,6 +125,19 @@ def sql_statement(session_id: int, stmt_id: int, **kwargs) -> SqlStatement:
     )
     defaults.update(kwargs)
     return SqlStatement(**defaults)
+
+
+def monitor_daily_sample(interval_start: datetime, **kwargs) -> MonitorDailySample:
+    defaults = dict(
+        cluster_name="MAIN",
+        interval_start=interval_start,
+        cpu_avg_percent=1.0,
+        temp_db_ram_avg_mib=10.0,
+        net_avg_mib_per_sec=1.0,
+        swap_avg_mib_per_sec=0.0,
+    )
+    defaults.update(kwargs)
+    return MonitorDailySample(**defaults)
 
 
 def db_size_sample(interval_start: datetime, **kwargs) -> DbSizeDailySample:

@@ -26,6 +26,7 @@ explicitly out of scope for this build — see
 |---|---|---|---|---|
 | `EXA_SQL_LAST_DAY` | Yes | 34 columns incl. `SESSION_ID`, `STMT_ID`, `COMMAND_NAME`, `COMMAND_CLASS`, `DURATION`, `START_TIME`, `STOP_TIME`, `CPU`, `TEMP_DB_RAM_PEAK`, `*_READ_SIZE`/`*_WRITE_SIZE`/`*_DURATION` (local/cache/remote), `NET`, `SUCCESS`, `ERROR_CODE`, `ERROR_TEXT`, `ROW_COUNT`, `CLUSTER_NAME` | OK (50 rows) | No detailed SQL text, no user identity. Basis for `SQL-FAIL-001`, `SQL-SLOW-001`, `SQL-TEMP-001`, `SQL-REMOTE-001`. |
 | `EXA_MONITOR_LAST_DAY` | Yes | `CLUSTER_NAME`, `MEASURE_TIME`, `LOAD`, `CPU`, `TEMP_DB_RAM`, `PERSISTENT_DB_RAM`, I/O columns, `NET`, `SWAP` | OK (1053 rows) | `SWAP` column present and numeric — basis for `SYS-SWAP-001`. Cluster-maximum semantics; does not identify which node. |
+| `EXA_MONITOR_DAILY` | Yes | `CLUSTER_NAME`, `INTERVAL_START`, `CPU_AVG`/`MAX`, `TEMP_DB_RAM_AVG`/`MAX`, `PERSISTENT_DB_RAM_AVG`/`MAX`, I/O columns, `NET_AVG`/`MAX`, `SWAP_AVG`/`MAX` (same metric family as `EXA_MONITOR_LAST_DAY`, pre-aggregated per day) | OK (53 rows spanning ~3 months on the probed instance) | Accumulates indefinitely like `EXA_DB_SIZE_DAILY` — the collector windows it to 90 days. Only 4 of its ~40 columns (`CPU_AVG`, `TEMP_DB_RAM_AVG`, `NET_AVG`, `SWAP_AVG`) are actually selected. Basis for `SYS-RESOURCE-TREND-001` — the first rule here to use a `_DAILY`/`_MONTHLY` variant of a metric family instead of only its `_LAST_DAY` one; see `IMPLEMENTATION_HISTORY.md` for the audit that surfaced this gap. |
 | `EXA_DB_SIZE_DAILY` | Yes | `CLUSTER_NAME`, `INTERVAL_START`, `RAW_OBJECT_SIZE_*`, `MEM_OBJECT_SIZE_*`, `AUXILIARY_SIZE_*`, `STATISTICS_SIZE_*`, `RECOMMENDED_DB_RAM_SIZE_*`, `STORAGE_SIZE_*`, `USE_*`, `TEMP_VOLUME_SIZE_*`, `OBJECT_COUNT_*` | OK (51 rows) | Both AVG and MAX variants present — basis for trend-based `STORAGE-GROWTH-001`. |
 | `EXA_USAGE_LAST_DAY` | Yes | `CLUSTER_NAME`, `MEASURE_TIME`, `USERS`, `QUERIES` | OK (167 rows) | Minimal. |
 | `EXA_DBA_PROFILE_LAST_DAY` | Yes | `SESSION_ID`, `STMT_ID`, `COMMAND_NAME`, `COMMAND_CLASS`, `PART_ID`, `PART_NAME`, `PART_INFO`, `OBJECT_SCHEMA`, `OBJECT_NAME`, `OBJECT_ROWS`, `OUT_ROWS`, `DURATION`, `CPU`, memory/I/O columns, `NET`, `REMARKS`, `SQL_TEXT` | OK (1 row observed — profiling not broadly enabled on the probed instance) | **No `IN_ROWS` column.** Only `OUT_ROWS`, `OBJECT_ROWS`. Row-expansion analysis (`IN_ROWS`→`OUT_ROWS`) is therefore provably unavailable on the public path — see [`internal-interface-policy.md`](internal-interface-policy.md). |
@@ -52,6 +53,7 @@ actually see — don't assume this table's results transfer.
 |---|---|---|
 | Workload duration/error analysis | Available | `EXA_SQL_LAST_DAY` |
 | System pressure / swap detection | Available | `EXA_MONITOR_LAST_DAY` |
+| Multi-day resource usage trend (CPU/TEMP DB RAM/network/swap) | Available | `EXA_MONITOR_DAILY` (`SYS-RESOURCE-TREND-001`) |
 | Capacity/growth trend | Available | `EXA_DB_SIZE_DAILY` |
 | Session inspection (basic) | Available | `EXA_ALL_SESSIONS` |
 | Session inspection (enhanced, cross-user) | Privilege-dependent | `EXA_DBA_SESSIONS` |

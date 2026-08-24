@@ -244,6 +244,27 @@ class SystemEvent:
 
 
 @dataclass
+class MonitorDailySample:
+    cluster_name: str | None
+    interval_start: datetime
+    cpu_avg_percent: float | None
+    temp_db_ram_avg_mib: float | None
+    net_avg_mib_per_sec: float | None
+    swap_avg_mib_per_sec: float | None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MonitorDailySample:
+        return cls(
+            cluster_name=data["cluster_name"],
+            interval_start=_parse_iso_datetime(data["interval_start"]),
+            cpu_avg_percent=data["cpu_avg_percent"],
+            temp_db_ram_avg_mib=data["temp_db_ram_avg_mib"],
+            net_avg_mib_per_sec=data["net_avg_mib_per_sec"],
+            swap_avg_mib_per_sec=data["swap_avg_mib_per_sec"],
+        )
+
+
+@dataclass
 class TransactionConflict:
     session_id: int
     conflict_session_id: int

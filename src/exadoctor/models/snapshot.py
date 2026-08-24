@@ -23,6 +23,7 @@ from exadoctor.collectors.models import (
     CollectionResult,
     DbSizeDailySample,
     MetadataProperty,
+    MonitorDailySample,
     MonitorSample,
     Parameter,
     SessionInfo,
@@ -65,6 +66,7 @@ class Snapshot:
     sessions: CollectionResult[SessionInfo]
     workload: CollectionResult[SqlStatement]
     monitoring: CollectionResult[MonitorSample]
+    monitor_daily: CollectionResult[MonitorDailySample]
     storage: CollectionResult[DbSizeDailySample]
     usage: CollectionResult[UsageSample]
     system_events: CollectionResult[SystemEvent]
@@ -92,6 +94,7 @@ class Snapshot:
             "sessions": self.sessions.to_dict(),
             "workload": self.workload.to_dict(),
             "monitoring": self.monitoring.to_dict(),
+            "monitor_daily": self.monitor_daily.to_dict(),
             "storage": self.storage.to_dict(),
             "usage": self.usage.to_dict(),
             "system_events": self.system_events.to_dict(),
@@ -112,6 +115,7 @@ class Snapshot:
             sessions=CollectionResult.from_dict(data["sessions"], SessionInfo),
             workload=CollectionResult.from_dict(data["workload"], SqlStatement),
             monitoring=CollectionResult.from_dict(data["monitoring"], MonitorSample),
+            monitor_daily=CollectionResult.from_dict(data["monitor_daily"], MonitorDailySample),
             storage=CollectionResult.from_dict(data["storage"], DbSizeDailySample),
             usage=CollectionResult.from_dict(data["usage"], UsageSample),
             system_events=CollectionResult.from_dict(data["system_events"], SystemEvent),
@@ -141,6 +145,7 @@ def build_snapshot(gateway: SqlGateway, host: str, port: int) -> Snapshot:
         sessions=collected["sessions"],
         workload=collected["workload"],
         monitoring=collected["monitoring"],
+        monitor_daily=collected["monitor_daily"],
         storage=collected["storage"],
         usage=collected["usage"],
         system_events=collected["system_events"],

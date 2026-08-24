@@ -126,6 +126,15 @@
       }
     ]
   },
+  "monitor_daily": {
+    "source_id": "EXA_MONITOR_DAILY",
+    "stability": "PUBLIC",
+    "available": true,
+    "reason": null,
+    "row_count": 0,
+    "collected_at": "2026-08-22T13:09:42.404184+00:00",
+    "rows": []
+  },
   "storage": {
     "source_id": "EXA_DB_SIZE_DAILY",
     "stability": "PUBLIC",

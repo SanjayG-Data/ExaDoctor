@@ -4,11 +4,13 @@ from rules_helpers import (
     DB_TIME,
     db_size_sample,
     make_snapshot,
+    monitor_daily_sample,
     monitor_sample,
     session_info,
     sql_statement,
     system_event,
     transaction_conflict,
+    unavailable_monitor_daily,
     unavailable_monitoring,
     unavailable_sessions,
     unavailable_storage,
@@ -22,6 +24,7 @@ from exadoctor.rules.policy import DEFAULT_POLICY
 from exadoctor.rules.public_core import (
     evaluate_command_share,
     evaluate_ram_sizing,
+    evaluate_resource_trend,
     evaluate_session_long,
     evaluate_sql_fail,
     evaluate_sql_remote,
@@ -481,6 +484,115 @@ def test_sys_temp_detects_sustained_elevation():
     snapshot = make_snapshot(monitoring=CollectionResult("EXA_MONITOR_LAST_DAY", "PUBLIC", True, None, rows))
     findings = evaluate_sys_temp(snapshot, DEFAULT_POLICY)
     assert any("sustained" in f.title.lower() for f in findings)
+
+
+# ---- SYS-RESOURCE-TREND-001 ------------------------------------------------
+
+
+def test_resource_trend_not_evaluated_when_unavailable():
+    snapshot = make_snapshot(monitor_daily=unavailable_monitor_daily())
+    findings = evaluate_resource_trend(snapshot, DEFAULT_POLICY)
+    assert findings[0].status == FindingStatus.NOT_EVALUATED
+
+
+def test_resource_trend_not_evaluated_with_too_few_days():
+    from exadoctor.collectors.models import CollectionResult
+
+    rows = [monitor_daily_sample(DB_TIME - timedelta(days=i)) for i in range(2)]
+    snapshot = make_snapshot(monitor_daily=CollectionResult("EXA_MONITOR_DAILY", "PUBLIC", True, None, rows))
+    findings = evaluate_resource_trend(snapshot, DEFAULT_POLICY)
+    assert findings[0].status == FindingStatus.NOT_EVALUATED
+
+
+def test_resource_trend_passes_when_flat():
+    from exadoctor.collectors.models import CollectionResult
+
+    n = DEFAULT_POLICY.min_samples_for_class_statistics
+    rows = [
+        monitor_daily_sample(
+            DB_TIME - timedelta(days=n - i), cpu_avg_percent=10.0, temp_db_ram_avg_mib=100.0,
+            net_avg_mib_per_sec=2.0, swap_avg_mib_per_sec=0.0,
+        )
+        for i in range(n)
+    ]
+    snapshot = make_snapshot(monitor_daily=CollectionResult("EXA_MONITOR_DAILY", "PUBLIC", True, None, rows))
+    findings = evaluate_resource_trend(snapshot, DEFAULT_POLICY)
+    assert all(f.status == FindingStatus.PASS for f in findings)
+
+
+def test_resource_trend_warns_on_cpu_growth():
+    from exadoctor.collectors.models import CollectionResult
+
+    n = DEFAULT_POLICY.min_samples_for_class_statistics
+    rows = [monitor_daily_sample(DB_TIME - timedelta(days=n - i), cpu_avg_percent=1.0) for i in range(n - 1)]
+    rows.append(
+        monitor_daily_sample(DB_TIME, cpu_avg_percent=1.0 * DEFAULT_POLICY.resource_trend_growth_factor + 10)
+    )
+    snapshot = make_snapshot(monitor_daily=CollectionResult("EXA_MONITOR_DAILY", "PUBLIC", True, None, rows))
+    findings = evaluate_resource_trend(snapshot, DEFAULT_POLICY)
+    assert any(f.status == FindingStatus.WARNING and "CPU" in f.title for f in findings)
+
+
+def test_resource_trend_warns_on_swap_emerging_from_zero_baseline():
+    from exadoctor.collectors.models import CollectionResult
+
+    # SWAP has no meaningful "ratio off zero" -- the absolute floor alone
+    # must decide when the trailing median is exactly 0, which is the
+    # normal/healthy baseline for swap.
+    n = DEFAULT_POLICY.min_samples_for_class_statistics
+    rows = [monitor_daily_sample(DB_TIME - timedelta(days=n - i), swap_avg_mib_per_sec=0.0) for i in range(n - 1)]
+    rows.append(
+        monitor_daily_sample(DB_TIME, swap_avg_mib_per_sec=DEFAULT_POLICY.resource_trend_min_absolute_swap_mib_per_sec)
+    )
+    snapshot = make_snapshot(monitor_daily=CollectionResult("EXA_MONITOR_DAILY", "PUBLIC", True, None, rows))
+    findings = evaluate_resource_trend(snapshot, DEFAULT_POLICY)
+    assert any(f.status == FindingStatus.WARNING and "swap" in f.title.lower() for f in findings)
+
+
+def test_resource_trend_ratio_alone_does_not_warn_on_a_trivial_absolute_difference():
+    from exadoctor.collectors.models import CollectionResult
+
+    # 10x the median (0.001 -> 0.01) but the absolute gap is nowhere near
+    # the CPU floor -- same lesson SQL-SLOW-001/SQL-TEMP-001 already learned.
+    n = DEFAULT_POLICY.min_samples_for_class_statistics
+    rows = [monitor_daily_sample(DB_TIME - timedelta(days=n - i), cpu_avg_percent=0.001) for i in range(n - 1)]
+    rows.append(monitor_daily_sample(DB_TIME, cpu_avg_percent=0.01))
+    snapshot = make_snapshot(monitor_daily=CollectionResult("EXA_MONITOR_DAILY", "PUBLIC", True, None, rows))
+    findings = evaluate_resource_trend(snapshot, DEFAULT_POLICY)
+    assert all(f.status == FindingStatus.PASS for f in findings)
+
+
+def test_resource_trend_reports_multiple_metrics_independently():
+    from exadoctor.collectors.models import CollectionResult
+
+    n = DEFAULT_POLICY.min_samples_for_class_statistics
+    rows = [
+        monitor_daily_sample(DB_TIME - timedelta(days=n - i), cpu_avg_percent=1.0, net_avg_mib_per_sec=1.0)
+        for i in range(n - 1)
+    ]
+    rows.append(
+        monitor_daily_sample(
+            DB_TIME,
+            cpu_avg_percent=1.0 * DEFAULT_POLICY.resource_trend_growth_factor + 10,
+            net_avg_mib_per_sec=1.0 * DEFAULT_POLICY.resource_trend_growth_factor + 10,
+        )
+    )
+    snapshot = make_snapshot(monitor_daily=CollectionResult("EXA_MONITOR_DAILY", "PUBLIC", True, None, rows))
+    findings = evaluate_resource_trend(snapshot, DEFAULT_POLICY)
+    warnings = [f for f in findings if f.status == FindingStatus.WARNING]
+    assert len(warnings) == 2
+
+
+def test_resource_trend_compares_against_latest_day_not_an_older_spike():
+    from exadoctor.collectors.models import CollectionResult
+
+    n = DEFAULT_POLICY.min_samples_for_class_statistics
+    rows = [monitor_daily_sample(DB_TIME - timedelta(days=n - i), cpu_avg_percent=1.0) for i in range(n - 1)]
+    rows[1] = monitor_daily_sample(rows[1].interval_start, cpu_avg_percent=100.0)  # an old spike, not the latest day
+    rows.append(monitor_daily_sample(DB_TIME, cpu_avg_percent=1.0))  # latest day is normal
+    snapshot = make_snapshot(monitor_daily=CollectionResult("EXA_MONITOR_DAILY", "PUBLIC", True, None, rows))
+    findings = evaluate_resource_trend(snapshot, DEFAULT_POLICY)
+    assert all(f.status == FindingStatus.PASS for f in findings)
 
 
 # ---- STORAGE-GROWTH-001 ---------------------------------------------------

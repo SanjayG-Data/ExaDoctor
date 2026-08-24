@@ -44,6 +44,22 @@ class RulePolicy:
     # ranking query (duration_sum_% > 0.5 or cpu_sum_% > 1.0).
     command_share_duration_threshold_percent: float = 0.5
     command_share_cpu_threshold_percent: float = 1.0
+    # SYS-RESOURCE-TREND-001: latest day's value vs. the trailing-history
+    # median for each metric, same shape as storage_growth_factor. Each
+    # metric also needs its own absolute floor (units/scale differ a lot
+    # between a CPU percentage and a MiB/s network rate) so a tiny baseline
+    # can't turn a clinically meaningless move into a "3x" WARNING -- the
+    # same lesson SQL-SLOW-001/SQL-TEMP-001 already learned the hard way.
+    resource_trend_growth_factor: float = 1.5
+    resource_trend_min_absolute_cpu_percent: float = 5.0
+    resource_trend_min_absolute_temp_db_ram_mib: float = 50.0
+    resource_trend_min_absolute_net_mib_per_sec: float = 5.0
+    # SWAP has no "normal" baseline the way CPU/NET do -- Exasol's own
+    # column comment says any SWAP above zero may indicate a system
+    # configuration problem -- so its floor is intentionally the smallest
+    # of the four: even a small amount of newly-appearing swap is worth a
+    # WARNING, not just a large one.
+    resource_trend_min_absolute_swap_mib_per_sec: float = 1.0
 
 
 DEFAULT_POLICY = RulePolicy()

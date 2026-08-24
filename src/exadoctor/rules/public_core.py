@@ -1007,6 +1007,139 @@ def evaluate_storage_growth(snapshot: Snapshot, policy: RulePolicy) -> list[Find
     ]
 
 
+# (metric attribute, display name, unit, policy absolute-floor attribute)
+_RESOURCE_TREND_METRICS = (
+    ("cpu_avg_percent", "CPU", "%", "resource_trend_min_absolute_cpu_percent"),
+    ("temp_db_ram_avg_mib", "TEMP DB RAM", "MiB", "resource_trend_min_absolute_temp_db_ram_mib"),
+    ("net_avg_mib_per_sec", "network", "MiB/s", "resource_trend_min_absolute_net_mib_per_sec"),
+    ("swap_avg_mib_per_sec", "swap", "MiB/s", "resource_trend_min_absolute_swap_mib_per_sec"),
+)
+
+
+def evaluate_resource_trend(snapshot: Snapshot, policy: RulePolicy) -> list[Finding]:
+    """Multi-day resource trend, using EXA_MONITOR_DAILY -- a source this
+    project didn't know existed until a user explicitly asked whether every
+    EXA_* table had actually been audited (it hadn't; see IMPLEMENTATION_
+    HISTORY.md). SYS-SWAP-001/SYS-TEMP-001 only ever look at the current
+    24-hour window (EXA_MONITOR_LAST_DAY); this looks at whether a metric's
+    *daily* average has been trending up over the trailing history, which a
+    24-hour-only check structurally cannot see.
+
+    Same statistical shape as STORAGE-GROWTH-001 (latest day vs.
+    trailing-history median, ratio-based), applied to four metrics instead
+    of one, each with its own absolute floor since a CPU percentage and a
+    MiB/s network rate aren't on comparable scales. When the trailing
+    median is exactly zero (a ratio is undefined), the absolute floor alone
+    decides -- this matters most for swap, where zero is the normal,
+    healthy baseline and any newly-appearing amount is itself the signal,
+    not a ratio off of it.
+    """
+    result = snapshot.monitor_daily
+    if not result.available:
+        return [
+            not_evaluated(
+                "SYS-RESOURCE-TREND-001",
+                "Resource usage trend",
+                "system",
+                result.reason or "EXA_MONITOR_DAILY unavailable",
+                requirements=["EXA_MONITOR_DAILY"],
+            )
+        ]
+
+    rows = sorted((s for s in result.rows if s.interval_start is not None), key=lambda s: s.interval_start)
+    if len(rows) < policy.min_samples_for_class_statistics:
+        return [
+            Finding(
+                id="SYS-RESOURCE-TREND-001",
+                title="Not enough daily history",
+                category="system",
+                status=FindingStatus.NOT_EVALUATED,
+                summary=f"Only {len(rows)} day(s) of EXA_MONITOR_DAILY history available; too few for a trend comparison.",
+                confidence="LOW",
+                requirements=["EXA_MONITOR_DAILY"],
+            )
+        ]
+
+    latest = rows[-1]
+    history = rows[:-1]
+
+    findings: list[Finding] = []
+    for attr, display_name, unit, floor_attr in _RESOURCE_TREND_METRICS:
+        latest_value = getattr(latest, attr)
+        history_values = [v for s in history if (v := getattr(s, attr)) is not None]
+        if latest_value is None or len(history_values) < policy.min_samples_for_class_statistics - 1:
+            continue
+
+        baseline = statistics.median(history_values)
+        floor = getattr(policy, floor_attr)
+        ratio = latest_value / baseline if baseline > 0 else None
+
+        if ratio is not None:
+            is_trending_up = ratio >= policy.resource_trend_growth_factor and (latest_value - baseline) >= floor
+            comparison_phrase = f"{ratio:.2f}x the"
+        else:
+            # Undefined ratio from a zero baseline -- the absolute floor
+            # alone decides (see docstring: this is exactly the swap case).
+            is_trending_up = latest_value >= floor
+            comparison_phrase = "newly above the (previously zero)"
+
+        if not is_trending_up:
+            continue
+
+        findings.append(
+            Finding(
+                id="SYS-RESOURCE-TREND-001",
+                title=f"{display_name} usage trending up",
+                category="system",
+                status=FindingStatus.WARNING,
+                summary=(
+                    f"Latest day's {display_name} average ({latest_value:.1f} {unit}) is "
+                    f"{comparison_phrase} {len(history_values)}-day historical median ({baseline:.1f} {unit})."
+                ),
+                evidence=[
+                    Evidence(
+                        source="EXA_MONITOR_DAILY",
+                        stability="PUBLIC",
+                        metric=attr.upper(),
+                        value=latest_value,
+                        unit=unit,
+                        timestamp=latest.interval_start,
+                        context=f"historical median={baseline:.1f} {unit} over {len(history_values)} day(s)",
+                    )
+                ],
+                recommendation=(
+                    f"Review what changed recently for {display_name} usage; a sustained upward trend across "
+                    "days (not just a single spike) suggests growing workload pressure rather than a one-off "
+                    "event -- see SYS-RAM-SIZING-001 if this is CPU or TEMP DB RAM related."
+                ),
+                confidence="MEDIUM",
+                requirements=["EXA_MONITOR_DAILY"],
+                limitations=[
+                    "Trend-relative to this instance's own recent daily history, not an absolute capacity judgement."
+                ],
+                documentation=["ExaDoctor policy: relative growth threshold vs. trailing daily median"],
+            )
+        )
+
+    if not findings:
+        return [
+            Finding(
+                id="SYS-RESOURCE-TREND-001",
+                title="No resource usage trending up",
+                category="system",
+                status=FindingStatus.PASS,
+                summary=(
+                    f"None of CPU/TEMP DB RAM/network/swap trended up beyond "
+                    f"{policy.resource_trend_growth_factor:g}x the trailing {len(history)}-day median."
+                ),
+                confidence="MEDIUM",
+                requirements=["EXA_MONITOR_DAILY"],
+                documentation=["ExaDoctor policy: relative growth threshold vs. trailing daily median"],
+            )
+        ]
+    return findings
+
+
 _SIZING_DOC_URL = "https://docs.exasol.com/db/latest/administration/on-premise/sizing.htm"
 
 
@@ -1298,6 +1431,7 @@ PUBLIC_CORE_RULES: list[Rule] = [
     Rule(id="SQL-COMMAND-SHARE-001", title="Workload composition by command", category="workload", evaluate=evaluate_command_share),
     Rule(id="SQL-CONFLICT-001", title="Transaction conflict contention", category="workload", evaluate=evaluate_transaction_conflicts),
     Rule(id="SYS-TEMP-001", title="TEMP usage anomaly", category="system", evaluate=evaluate_sys_temp),
+    Rule(id="SYS-RESOURCE-TREND-001", title="Resource usage trend", category="system", evaluate=evaluate_resource_trend),
     Rule(id="STORAGE-GROWTH-001", title="Unusual database growth", category="capacity", evaluate=evaluate_storage_growth),
     Rule(id="SYS-RAM-SIZING-001", title="Exasol-recommended DB RAM", category="capacity", evaluate=evaluate_ram_sizing),
     Rule(id="SESSION-LONG-001", title="Long-lived session", category="sessions", evaluate=evaluate_session_long),

@@ -116,6 +116,12 @@ PUBLIC_SOURCES: tuple[SourceSpec, ...] = (
         ),
     ),
     SourceSpec(
+        id="EXA_MONITOR_DAILY",
+        schema="EXA_STATISTICS",
+        table="EXA_MONITOR_DAILY",
+        required_columns=("CLUSTER_NAME", "INTERVAL_START", "CPU_AVG", "TEMP_DB_RAM_AVG", "NET_AVG", "SWAP_AVG"),
+    ),
+    SourceSpec(
         id="EXA_DB_SIZE_DAILY",
         schema="EXA_STATISTICS",
         table="EXA_DB_SIZE_DAILY",

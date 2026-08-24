@@ -119,6 +119,9 @@ def _sample_snapshot() -> Snapshot:
             )
         ],
     )
+    monitor_daily = CollectionResult(
+        source_id="EXA_MONITOR_DAILY", stability="PUBLIC", available=True, reason=None, rows=[]
+    )
     storage = CollectionResult(source_id="EXA_DB_SIZE_DAILY", stability="PUBLIC", available=True, reason=None, rows=[])
     usage = CollectionResult(
         source_id="EXA_USAGE_LAST_DAY",
@@ -171,6 +174,7 @@ def _sample_snapshot() -> Snapshot:
         sessions=sessions,
         workload=workload,
         monitoring=monitoring,
+        monitor_daily=monitor_daily,
         storage=storage,
         usage=usage,
         system_events=system_events,
