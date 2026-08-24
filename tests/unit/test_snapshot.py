@@ -14,6 +14,7 @@ from exadoctor.collectors.models import (
     Parameter,
     SessionHistoryRecord,
     SessionInfo,
+    SqlDailySample,
     SqlStatement,
     SystemEvent,
     TransactionConflict,
@@ -121,6 +122,23 @@ def _sample_snapshot() -> Snapshot:
             )
         ],
     )
+    sql_daily = CollectionResult(
+        source_id="EXA_SQL_DAILY",
+        stability="PUBLIC",
+        available=True,
+        reason=None,
+        rows=[
+            SqlDailySample(
+                cluster_name="MAIN",
+                interval_start=datetime(2026, 8, 24, 0, 0),  # naive: real Exasol TIMESTAMP
+                command_name="SELECT",
+                command_class="DQL",
+                success=True,
+                count=284,
+                duration_avg_seconds=0.025,
+            )
+        ],
+    )
     monitoring = CollectionResult(
         source_id="EXA_MONITOR_LAST_DAY",
         stability="PUBLIC",
@@ -194,6 +212,7 @@ def _sample_snapshot() -> Snapshot:
         sessions=sessions,
         session_history=session_history,
         workload=workload,
+        sql_daily=sql_daily,
         monitoring=monitoring,
         monitor_daily=monitor_daily,
         storage=storage,

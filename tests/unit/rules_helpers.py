@@ -13,6 +13,7 @@ from exadoctor.collectors.models import (
     Parameter,
     SessionHistoryRecord,
     SessionInfo,
+    SqlDailySample,
     SqlStatement,
     SystemEvent,
     TransactionConflict,
@@ -36,6 +37,7 @@ def make_snapshot(
     monitoring: CollectionResult[MonitorSample] | None = None,
     monitor_daily: CollectionResult[MonitorDailySample] | None = None,
     workload: CollectionResult[SqlStatement] | None = None,
+    sql_daily: CollectionResult[SqlDailySample] | None = None,
     storage: CollectionResult[DbSizeDailySample] | None = None,
     sessions: CollectionResult[SessionInfo] | None = None,
     session_history: CollectionResult[SessionHistoryRecord] | None = None,
@@ -52,6 +54,7 @@ def make_snapshot(
         sessions=sessions if sessions is not None else _empty("EXA_ALL_SESSIONS"),
         session_history=session_history if session_history is not None else _empty("EXA_DBA_SESSIONS_LAST_DAY"),
         workload=workload if workload is not None else _empty("EXA_SQL_LAST_DAY"),
+        sql_daily=sql_daily if sql_daily is not None else _empty("EXA_SQL_DAILY"),
         monitoring=monitoring if monitoring is not None else _empty("EXA_MONITOR_LAST_DAY"),
         monitor_daily=monitor_daily if monitor_daily is not None else _empty("EXA_MONITOR_DAILY"),
         storage=storage if storage is not None else _empty("EXA_DB_SIZE_DAILY"),
@@ -69,6 +72,10 @@ def unavailable_monitoring() -> CollectionResult[MonitorSample]:
 
 def unavailable_workload() -> CollectionResult[SqlStatement]:
     return _unavailable("EXA_SQL_LAST_DAY")
+
+
+def unavailable_sql_daily() -> CollectionResult[SqlDailySample]:
+    return _unavailable("EXA_SQL_DAILY")
 
 
 def unavailable_storage() -> CollectionResult[DbSizeDailySample]:
@@ -132,6 +139,20 @@ def sql_statement(session_id: int, stmt_id: int, **kwargs) -> SqlStatement:
     )
     defaults.update(kwargs)
     return SqlStatement(**defaults)
+
+
+def sql_daily_sample(interval_start: datetime, **kwargs) -> SqlDailySample:
+    defaults = dict(
+        cluster_name="MAIN",
+        interval_start=interval_start,
+        command_name="SELECT",
+        command_class="DQL",
+        success=True,
+        count=100,
+        duration_avg_seconds=0.02,
+    )
+    defaults.update(kwargs)
+    return SqlDailySample(**defaults)
 
 
 def monitor_daily_sample(interval_start: datetime, **kwargs) -> MonitorDailySample:

@@ -8,6 +8,7 @@ from rules_helpers import (
     monitor_sample,
     session_history_record,
     session_info,
+    sql_daily_sample,
     sql_statement,
     system_event,
     transaction_conflict,
@@ -15,6 +16,7 @@ from rules_helpers import (
     unavailable_monitoring,
     unavailable_session_history,
     unavailable_sessions,
+    unavailable_sql_daily,
     unavailable_storage,
     unavailable_system_events,
     unavailable_transaction_conflicts,
@@ -34,6 +36,7 @@ from exadoctor.rules.public_core import (
     evaluate_sql_remote,
     evaluate_sql_slow,
     evaluate_sql_temp,
+    evaluate_sql_workload_trend,
     evaluate_storage_growth,
     evaluate_sys_swap,
     evaluate_sys_temp,
@@ -890,3 +893,84 @@ def test_session_terminated_at_recurrence_threshold_is_warning():
     findings = evaluate_session_forced_termination(snapshot, DEFAULT_POLICY)
     assert findings[0].status == FindingStatus.WARNING
     assert findings[0].evidence[0].value == n
+
+
+# ---- SQL-WORKLOAD-TREND-001 -------------------------------------------------
+
+
+def test_sql_workload_trend_not_evaluated_when_unavailable():
+    snapshot = make_snapshot(sql_daily=unavailable_sql_daily())
+    findings = evaluate_sql_workload_trend(snapshot, DEFAULT_POLICY)
+    assert findings[0].status == FindingStatus.NOT_EVALUATED
+
+
+def test_sql_workload_trend_not_evaluated_with_too_few_days():
+    from exadoctor.collectors.models import CollectionResult
+
+    rows = [sql_daily_sample(DB_TIME - timedelta(days=i)) for i in range(2)]
+    snapshot = make_snapshot(sql_daily=CollectionResult("EXA_SQL_DAILY", "PUBLIC", True, None, rows))
+    findings = evaluate_sql_workload_trend(snapshot, DEFAULT_POLICY)
+    assert findings[0].status == FindingStatus.NOT_EVALUATED
+
+
+def test_sql_workload_trend_passes_when_flat():
+    from exadoctor.collectors.models import CollectionResult
+
+    n = DEFAULT_POLICY.min_samples_for_class_statistics
+    rows = [
+        sql_daily_sample(DB_TIME - timedelta(days=n - i), count=100, duration_avg_seconds=0.02) for i in range(n)
+    ]
+    snapshot = make_snapshot(sql_daily=CollectionResult("EXA_SQL_DAILY", "PUBLIC", True, None, rows))
+    findings = evaluate_sql_workload_trend(snapshot, DEFAULT_POLICY)
+    assert all(f.status == FindingStatus.PASS for f in findings)
+
+
+def test_sql_workload_trend_warns_on_statement_count_growth():
+    from exadoctor.collectors.models import CollectionResult
+
+    n = DEFAULT_POLICY.min_samples_for_class_statistics
+    rows = [sql_daily_sample(DB_TIME - timedelta(days=n - i), count=100, duration_avg_seconds=0.02) for i in range(n - 1)]
+    rows.append(sql_daily_sample(DB_TIME, count=1000, duration_avg_seconds=0.02))
+    snapshot = make_snapshot(sql_daily=CollectionResult("EXA_SQL_DAILY", "PUBLIC", True, None, rows))
+    findings = evaluate_sql_workload_trend(snapshot, DEFAULT_POLICY)
+    assert any(f.status == FindingStatus.WARNING and "statement volume" in f.title for f in findings)
+
+
+def test_sql_workload_trend_aggregates_multiple_command_groups_per_day():
+    """EXA_SQL_DAILY has one row per (day, command_name, ...) group -- the
+    rule must sum COUNT across all of a day's groups, not just look at one
+    row per day."""
+    from exadoctor.collectors.models import CollectionResult
+
+    n = DEFAULT_POLICY.min_samples_for_class_statistics
+    rows = [sql_daily_sample(DB_TIME - timedelta(days=n - i), count=100, duration_avg_seconds=0.02) for i in range(n - 1)]
+    rows.append(sql_daily_sample(DB_TIME, command_name="SELECT", count=600, duration_avg_seconds=0.02))
+    rows.append(sql_daily_sample(DB_TIME, command_name="COMMIT", command_class="TRANSACTION", count=600, duration_avg_seconds=0.001))
+    snapshot = make_snapshot(sql_daily=CollectionResult("EXA_SQL_DAILY", "PUBLIC", True, None, rows))
+    findings = evaluate_sql_workload_trend(snapshot, DEFAULT_POLICY)
+    warning = next(f for f in findings if f.status == FindingStatus.WARNING and "statement volume" in f.title)
+    assert warning.evidence[0].value == 1200.0
+
+
+def test_sql_workload_trend_ratio_alone_does_not_warn_on_a_trivial_absolute_difference():
+    from exadoctor.collectors.models import CollectionResult
+
+    # 10x the median (1 -> 10 statements/day) but nowhere near the absolute floor.
+    n = DEFAULT_POLICY.min_samples_for_class_statistics
+    rows = [sql_daily_sample(DB_TIME - timedelta(days=n - i), count=1, duration_avg_seconds=0.001) for i in range(n - 1)]
+    rows.append(sql_daily_sample(DB_TIME, count=10, duration_avg_seconds=0.001))
+    snapshot = make_snapshot(sql_daily=CollectionResult("EXA_SQL_DAILY", "PUBLIC", True, None, rows))
+    findings = evaluate_sql_workload_trend(snapshot, DEFAULT_POLICY)
+    assert all(f.status == FindingStatus.PASS for f in findings)
+
+
+def test_sql_workload_trend_reports_multiple_metrics_independently():
+    from exadoctor.collectors.models import CollectionResult
+
+    n = DEFAULT_POLICY.min_samples_for_class_statistics
+    rows = [sql_daily_sample(DB_TIME - timedelta(days=n - i), count=100, duration_avg_seconds=1.0) for i in range(n - 1)]
+    rows.append(sql_daily_sample(DB_TIME, count=1000, duration_avg_seconds=10.0))
+    snapshot = make_snapshot(sql_daily=CollectionResult("EXA_SQL_DAILY", "PUBLIC", True, None, rows))
+    findings = evaluate_sql_workload_trend(snapshot, DEFAULT_POLICY)
+    warnings = [f for f in findings if f.status == FindingStatus.WARNING]
+    assert len(warnings) == 2

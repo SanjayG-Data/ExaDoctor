@@ -1422,6 +1422,146 @@ def evaluate_session_long(snapshot: Snapshot, policy: RulePolicy) -> list[Findin
     return findings
 
 
+# (result-tuple index, display name, unit, policy absolute-floor attribute)
+_WORKLOAD_TREND_METRICS = (
+    (0, "statement volume", "statements/day", "sql_workload_trend_min_absolute_count"),
+    (1, "total execution time", "seconds/day", "sql_workload_trend_min_absolute_duration_seconds"),
+)
+
+
+def evaluate_sql_workload_trend(snapshot: Snapshot, policy: RulePolicy) -> list[Finding]:
+    """Multi-day SQL workload trend, using EXA_SQL_DAILY -- confirmed to
+    exist during the same systematic system-table audit that surfaced
+    EXA_MONITOR_DAILY (see SYS-RESOURCE-TREND-001) and EXA_DBA_SESSIONS_
+    LAST_DAY, but not turned into a rule at the time. Answers a workload
+    question no other rule here can: is total query volume or total time
+    spent executing SQL trending up over days/weeks? SQL-SLOW-001/
+    SQL-TEMP-001/SQL-COMMAND-SHARE-001 all only ever look at the current
+    24-hour window (EXA_SQL_LAST_DAY) -- a slow multi-week creep in overall
+    workload is invisible to a 24h-only check by construction.
+
+    EXA_SQL_DAILY holds one row per (day, command_name, command_class,
+    success, execution_mode) group, not one row per day -- so unlike
+    EXA_MONITOR_DAILY/EXA_DB_SIZE_DAILY, this rule aggregates across those
+    groups per day first (total statement COUNT, and a total-execution-
+    seconds proxy summing COUNT * DURATION_AVG per group, the same
+    "weight an average by its own count" approach SQL-COMMAND-SHARE-001
+    already uses for its CPU-seconds proxy) before applying the same
+    latest-day-vs-trailing-median shape as STORAGE-GROWTH-001/
+    SYS-RESOURCE-TREND-001.
+    """
+    result = snapshot.sql_daily
+    if not result.available:
+        return [
+            not_evaluated(
+                "SQL-WORKLOAD-TREND-001",
+                "SQL workload volume trend",
+                "workload",
+                result.reason or "EXA_SQL_DAILY unavailable",
+                requirements=["EXA_SQL_DAILY"],
+            )
+        ]
+
+    daily: dict = defaultdict(lambda: [0.0, 0.0])  # interval_start -> [total_count, total_duration_seconds]
+    for r in result.rows:
+        if r.interval_start is None:
+            continue
+        bucket = daily[r.interval_start]
+        bucket[0] += r.count
+        if r.duration_avg_seconds is not None:
+            bucket[1] += r.count * r.duration_avg_seconds
+
+    days = sorted(daily.items())
+    if len(days) < policy.min_samples_for_class_statistics:
+        return [
+            Finding(
+                id="SQL-WORKLOAD-TREND-001",
+                title="Not enough daily SQL history",
+                category="workload",
+                status=FindingStatus.NOT_EVALUATED,
+                summary=f"Only {len(days)} day(s) of EXA_SQL_DAILY history available; too few for a trend comparison.",
+                confidence="LOW",
+                requirements=["EXA_SQL_DAILY"],
+            )
+        ]
+
+    latest_interval, latest_values = days[-1]
+    history = days[:-1]
+
+    findings: list[Finding] = []
+    for idx, display_name, unit, floor_attr in _WORKLOAD_TREND_METRICS:
+        latest_value = latest_values[idx]
+        history_values = [v[idx] for _, v in history]
+        baseline = statistics.median(history_values)
+        floor = getattr(policy, floor_attr)
+        ratio = latest_value / baseline if baseline > 0 else None
+
+        if ratio is not None:
+            is_trending_up = ratio >= policy.sql_workload_trend_growth_factor and (latest_value - baseline) >= floor
+            comparison_phrase = f"{ratio:.2f}x the"
+        else:
+            is_trending_up = latest_value >= floor
+            comparison_phrase = "newly above the (previously zero)"
+
+        if not is_trending_up:
+            continue
+
+        findings.append(
+            Finding(
+                id="SQL-WORKLOAD-TREND-001",
+                title=f"SQL {display_name} trending up",
+                category="workload",
+                status=FindingStatus.WARNING,
+                summary=(
+                    f"Latest day's {display_name} ({latest_value:.1f} {unit}) is "
+                    f"{comparison_phrase} {len(history_values)}-day historical median ({baseline:.1f} {unit})."
+                ),
+                evidence=[
+                    Evidence(
+                        source="EXA_SQL_DAILY",
+                        stability="PUBLIC",
+                        metric="TOTAL_COUNT" if idx == 0 else "TOTAL_DURATION_SECONDS",
+                        value=latest_value,
+                        unit=unit,
+                        timestamp=latest_interval,
+                        context=f"historical median={baseline:.1f} {unit} over {len(history_values)} day(s)",
+                    )
+                ],
+                recommendation=(
+                    f"Review what changed recently for {display_name}; a sustained upward trend across days "
+                    "(not just a single busy day) suggests growing workload rather than a one-off event -- "
+                    "see SYS-RESOURCE-TREND-001 if system resource usage is trending up alongside it."
+                ),
+                confidence="MEDIUM",
+                requirements=["EXA_SQL_DAILY"],
+                limitations=[
+                    "Trend-relative to this instance's own recent daily history, not an absolute capacity judgement.",
+                    "Total execution time is COUNT * DURATION_AVG summed per command group, a proxy derived from "
+                    "EXA_SQL_DAILY's own pre-aggregated averages, not a per-statement sum.",
+                ],
+                documentation=["ExaDoctor policy: relative growth threshold vs. trailing daily median"],
+            )
+        )
+
+    if not findings:
+        return [
+            Finding(
+                id="SQL-WORKLOAD-TREND-001",
+                title="No SQL workload trending up",
+                category="workload",
+                status=FindingStatus.PASS,
+                summary=(
+                    f"Neither statement volume nor total execution time trended up beyond "
+                    f"{policy.sql_workload_trend_growth_factor:g}x the trailing {len(history)}-day median."
+                ),
+                confidence="MEDIUM",
+                requirements=["EXA_SQL_DAILY"],
+                documentation=["ExaDoctor policy: relative growth threshold vs. trailing daily median"],
+            )
+        ]
+    return findings
+
+
 def evaluate_session_auth_failures(snapshot: Snapshot, policy: RulePolicy) -> list[Finding]:
     """Reports failed login attempts from EXA_DBA_SESSIONS_LAST_DAY --
     invisible to every other rule here, since EXA_ALL_SESSIONS/EXA_DBA_
@@ -1634,6 +1774,7 @@ PUBLIC_CORE_RULES: list[Rule] = [
     Rule(id="SQL-REMOTE-001", title="Remote-storage-heavy statement", category="workload", evaluate=evaluate_sql_remote),
     Rule(id="SQL-COMMAND-SHARE-001", title="Workload composition by command", category="workload", evaluate=evaluate_command_share),
     Rule(id="SQL-CONFLICT-001", title="Transaction conflict contention", category="workload", evaluate=evaluate_transaction_conflicts),
+    Rule(id="SQL-WORKLOAD-TREND-001", title="SQL workload volume trend", category="workload", evaluate=evaluate_sql_workload_trend),
     Rule(id="SYS-TEMP-001", title="TEMP usage anomaly", category="system", evaluate=evaluate_sys_temp),
     Rule(id="SYS-RESOURCE-TREND-001", title="Resource usage trend", category="system", evaluate=evaluate_resource_trend),
     Rule(id="STORAGE-GROWTH-001", title="Unusual database growth", category="capacity", evaluate=evaluate_storage_growth),

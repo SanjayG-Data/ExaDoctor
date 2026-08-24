@@ -28,6 +28,7 @@ from exadoctor.collectors.models import (
     Parameter,
     SessionHistoryRecord,
     SessionInfo,
+    SqlDailySample,
     SqlStatement,
     SystemEvent,
     TransactionConflict,
@@ -67,6 +68,7 @@ class Snapshot:
     sessions: CollectionResult[SessionInfo]
     session_history: CollectionResult[SessionHistoryRecord]
     workload: CollectionResult[SqlStatement]
+    sql_daily: CollectionResult[SqlDailySample]
     monitoring: CollectionResult[MonitorSample]
     monitor_daily: CollectionResult[MonitorDailySample]
     storage: CollectionResult[DbSizeDailySample]
@@ -96,6 +98,7 @@ class Snapshot:
             "sessions": self.sessions.to_dict(),
             "session_history": self.session_history.to_dict(),
             "workload": self.workload.to_dict(),
+            "sql_daily": self.sql_daily.to_dict(),
             "monitoring": self.monitoring.to_dict(),
             "monitor_daily": self.monitor_daily.to_dict(),
             "storage": self.storage.to_dict(),
@@ -118,6 +121,7 @@ class Snapshot:
             sessions=CollectionResult.from_dict(data["sessions"], SessionInfo),
             session_history=CollectionResult.from_dict(data["session_history"], SessionHistoryRecord),
             workload=CollectionResult.from_dict(data["workload"], SqlStatement),
+            sql_daily=CollectionResult.from_dict(data["sql_daily"], SqlDailySample),
             monitoring=CollectionResult.from_dict(data["monitoring"], MonitorSample),
             monitor_daily=CollectionResult.from_dict(data["monitor_daily"], MonitorDailySample),
             storage=CollectionResult.from_dict(data["storage"], DbSizeDailySample),
@@ -149,6 +153,7 @@ def build_snapshot(gateway: SqlGateway, host: str, port: int) -> Snapshot:
         sessions=collected["sessions"],
         session_history=collected["session_history"],
         workload=collected["workload"],
+        sql_daily=collected["sql_daily"],
         monitoring=collected["monitoring"],
         monitor_daily=collected["monitor_daily"],
         storage=collected["storage"],

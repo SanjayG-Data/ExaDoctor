@@ -71,6 +71,17 @@ class RulePolicy:
     # issue (misconfigured timeout, app not closing connections) worth
     # flagging.
     forced_termination_recurrence_threshold: int = 3
+    # SQL-WORKLOAD-TREND-001: same shape as resource_trend_growth_factor,
+    # applied to daily statement volume/total execution time from
+    # EXA_SQL_DAILY instead of system resource metrics.
+    sql_workload_trend_growth_factor: float = 1.5
+    # A ratio-only check on a near-idle instance would flag "10 statements
+    # became 30" as a 3x WARNING for a clinically meaningless jump -- same
+    # lesson as every other trend/outlier rule here. These floors are
+    # deliberately low (an idle dev/test instance is a real, common case),
+    # not tuned against any specific production workload.
+    sql_workload_trend_min_absolute_count: float = 50.0
+    sql_workload_trend_min_absolute_duration_seconds: float = 60.0
 
 
 DEFAULT_POLICY = RulePolicy()

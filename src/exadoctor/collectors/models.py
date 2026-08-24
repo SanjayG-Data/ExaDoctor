@@ -265,6 +265,29 @@ class MonitorDailySample:
 
 
 @dataclass
+class SqlDailySample:
+    cluster_name: str | None
+    interval_start: datetime
+    command_name: str | None
+    command_class: str | None
+    success: bool
+    count: int
+    duration_avg_seconds: float | None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> SqlDailySample:
+        return cls(
+            cluster_name=data["cluster_name"],
+            interval_start=_parse_iso_datetime(data["interval_start"]),
+            command_name=data["command_name"],
+            command_class=data["command_class"],
+            success=data["success"],
+            count=data["count"],
+            duration_avg_seconds=data["duration_avg_seconds"],
+        )
+
+
+@dataclass
 class TransactionConflict:
     session_id: int
     conflict_session_id: int

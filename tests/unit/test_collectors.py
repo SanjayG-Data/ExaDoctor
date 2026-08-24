@@ -20,6 +20,7 @@ from exadoctor.collectors import (
     parameters,
     session_history,
     sessions,
+    sql_daily,
     storage,
     system_events,
     transaction_conflicts,
@@ -295,6 +296,38 @@ def test_collect_session_history_maps_rows() -> None:
     assert result.rows[0].error_code == "R0033"
 
 
+def test_collect_sql_daily_uses_default_window_in_sql() -> None:
+    captured_sql = {}
+
+    class CapturingGateway:
+        def execute(self, sql: str) -> QueryResult:
+            captured_sql["sql"] = sql
+            return QueryResult(columns=[], rows=[])
+
+    sql_daily.collect_sql_daily(CapturingGateway())
+    assert "INTERVAL '90' DAY" in captured_sql["sql"]
+
+
+def test_collect_sql_daily_rejects_non_positive_window() -> None:
+    with pytest.raises(ValueError):
+        sql_daily.collect_sql_daily(ScriptedGateway({}), window_days=0)
+
+
+def test_collect_sql_daily_maps_rows() -> None:
+    class CapturingGateway:
+        def execute(self, sql: str) -> QueryResult:
+            return QueryResult(
+                columns=[],
+                rows=[("MAIN", datetime(2026, 8, 24, 0, 0), "SELECT", "DQL", True, Decimal("284"), Decimal("0.025"))],
+            )
+
+    result = sql_daily.collect_sql_daily(CapturingGateway())
+    assert result.rows[0].command_name == "SELECT"
+    assert result.rows[0].success is True
+    assert result.rows[0].count == 284
+    assert result.rows[0].duration_avg_seconds == 0.025
+
+
 def test_collector_degrades_gracefully_on_query_failure() -> None:
     gateway = ScriptedGateway({metadata.SQL: ConnectionFailedError("object EXA_METADATA not found")})
     result = metadata.collect_metadata(gateway)
@@ -338,6 +371,7 @@ def test_collect_all_survives_one_failing_collector() -> None:
                 "EXA_DB_SIZE_DAILY" in sql
                 or "EXA_DBA_TRANSACTION_CONFLICTS" in sql
                 or "EXA_MONITOR_DAILY" in sql
+                or "EXA_SQL_DAILY" in sql
             ):
                 return QueryResult(columns=[], rows=[])
             return super().execute(sql)
@@ -351,6 +385,7 @@ def test_collect_all_survives_one_failing_collector() -> None:
         "sessions",
         "session_history",
         "workload",
+        "sql_daily",
         "monitoring",
         "monitor_daily",
         "storage",
