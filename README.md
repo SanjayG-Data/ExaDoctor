@@ -56,6 +56,13 @@ exadoctor scan
 - A reachable Exasol instance.
 - Nothing else — the installer takes care of any Python setup for you.
 
+Works the same way regardless of how that instance is deployed — verified
+live against both a self-hosted `EXASolution 2026.1.0` instance and a real
+Exasol SaaS cluster (`8.29.13`), with no code differences needed between
+them. Every source is probed independently with graceful degradation, so
+a locked-down role or an older version just yields a `NOT_EVALUATED`
+finding for whatever it can't see, never a crash.
+
 ### Updating
 
 ```sh
