@@ -28,6 +28,13 @@ class RulePolicy:
     monitor_persistence_fraction: float = 0.5
     monitor_persistence_factor: float = 1.5
     storage_growth_factor: float = 1.5
+    # STORAGE-GROWTH-001: same lesson as every other trend/outlier rule
+    # here -- a ratio-only check would flag a dev/test instance moving
+    # from e.g. 0.2 GiB to 0.35 GiB (1.75x) as a WARNING for a clinically
+    # meaningless absolute change. A few hundred MB of storage growth is
+    # noise; 1.0 GiB is a defensible floor at the "small dev/test instance"
+    # scale already used to justify the other rules' floors in this file.
+    storage_growth_min_absolute_gib: float = 1.0
     error_recurrence_threshold: int = 3
     max_findings_per_rule: int = 25
     dominant_part_share_threshold: float = 0.5

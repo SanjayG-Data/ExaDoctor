@@ -1001,8 +1001,22 @@ def evaluate_storage_growth(snapshot: Snapshot, policy: RulePolicy) -> list[Find
             )
         ]
 
-    ratio = latest.storage_size_avg_gib / baseline
-    if ratio < policy.storage_growth_factor:
+    # A ratio-only check would flag a dev/test instance moving from e.g.
+    # 0.2 GiB to 0.35 GiB (1.75x) as a WARNING for a clinically meaningless
+    # absolute change -- the same lesson every other trend/outlier rule in
+    # this file has already learned the hard way (see the
+    # "clinically meaningless" comments elsewhere). Delegating to the
+    # shared _is_trending_up helper both adds that missing absolute floor
+    # and fixes this rule's own exposure to the ratio-side float-imprecision
+    # bug fixed there. round_ndigits=1 matches this rule's own display
+    # precision (":.1f" throughout) -- GiB values here are derived from a
+    # byte-scale conversion, not a documented fixed-decimal Exasol column,
+    # so 1 digit is a reasonable, not over-precise, rounding floor.
+    is_trending_up, comparison_phrase = _is_trending_up(
+        latest.storage_size_avg_gib, baseline, policy.storage_growth_factor, policy.storage_growth_min_absolute_gib, 1
+    )
+
+    if not is_trending_up:
         return [
             Finding(
                 id="STORAGE-GROWTH-001",
@@ -1010,7 +1024,7 @@ def evaluate_storage_growth(snapshot: Snapshot, policy: RulePolicy) -> list[Find
                 category="capacity",
                 status=FindingStatus.PASS,
                 summary=(
-                    f"Latest storage size ({latest.storage_size_avg_gib:.1f} GiB) is {ratio:.2f}x the "
+                    f"Latest storage size ({latest.storage_size_avg_gib:.1f} GiB) is {comparison_phrase} "
                     f"{len(history)}-day historical median ({baseline:.1f} GiB)."
                 ),
                 confidence="MEDIUM",
@@ -1026,9 +1040,10 @@ def evaluate_storage_growth(snapshot: Snapshot, policy: RulePolicy) -> list[Find
             category="capacity",
             status=FindingStatus.WARNING,
             summary=(
-                f"Latest storage size ({latest.storage_size_avg_gib:.1f} GiB) is {ratio:.2f}x the "
+                f"Latest storage size ({latest.storage_size_avg_gib:.1f} GiB) is {comparison_phrase} "
                 f"{len(history)}-day historical median ({baseline:.1f} GiB), exceeding the "
-                f"{policy.storage_growth_factor:g}x growth threshold."
+                f"{policy.storage_growth_factor:g}x growth threshold and the "
+                f"{policy.storage_growth_min_absolute_gib:g} GiB absolute floor."
             ),
             evidence=[
                 Evidence(
@@ -1077,13 +1092,28 @@ def _is_trending_up(latest_value: float, baseline: float, growth_factor: float, 
     comparison here means that fix now only has to be made once. Pass
     `round_ndigits=None` when the gap is already exact (e.g. a sum of
     integer counts), where rounding would be a no-op anyway.
+
+    The growth-factor *decision* is made via multiplication
+    (`latest_value >= baseline * growth_factor`), not division-then-compare
+    against a raw `ratio` -- division has the identical IEEE-754 imprecision
+    problem as subtraction (e.g. `3.3 / 2.2 == 1.4999999999999998`, not
+    exactly `1.5`, which would fail a `>= 1.5` check that should
+    mathematically pass it). Mathematically equivalent for `baseline > 0`:
+    `latest_value / baseline >= growth_factor` iff
+    `latest_value >= baseline * growth_factor`. `ratio` is still computed
+    separately, purely for the human-readable `comparison_phrase` display
+    text, where imprecision in the last couple of displayed digits doesn't
+    matter. Found reappearing a fourth time (this time on the ratio side
+    rather than the gap side) by independent code review.
     """
-    ratio = latest_value / baseline if baseline > 0 else None
-    if ratio is not None:
+    if baseline > 0:
         gap = latest_value - baseline
+        growth_threshold = baseline * growth_factor
         if round_ndigits is not None:
             gap = round(gap, round_ndigits)
-        is_trending_up = ratio >= growth_factor and gap >= floor
+            growth_threshold = round(growth_threshold, round_ndigits)
+        is_trending_up = latest_value >= growth_threshold and gap >= floor
+        ratio = latest_value / baseline
         comparison_phrase = f"{ratio:.2f}x the"
     else:
         is_trending_up = latest_value >= floor

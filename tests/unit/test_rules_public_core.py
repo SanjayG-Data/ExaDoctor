@@ -23,6 +23,7 @@ from rules_helpers import (
     unavailable_workload,
 )
 
+from exadoctor.anonymizer.anonymizer import anonymize_snapshot
 from exadoctor.models.finding import FindingStatus
 from exadoctor.rules.policy import DEFAULT_POLICY
 from exadoctor.rules.public_core import (
@@ -622,6 +623,34 @@ def test_resource_trend_cpu_boundary_survives_float_rounding():
     assert any(f.status == FindingStatus.WARNING and "CPU" in f.title for f in findings)
 
 
+def test_resource_trend_cpu_ratio_boundary_survives_float_division_imprecision():
+    """Regression test for the ratio-side counterpart of the bug fixed
+    above: `ratio = latest_value / baseline` has the identical IEEE-754
+    imprecision problem as the additive gap -- `3.3 / 2.2 ==
+    1.4999999999999998` in raw float arithmetic, which fails a `>= 1.5`
+    growth-factor check that should mathematically pass it (3.3 is exactly
+    1.5x 2.2). `_is_trending_up` now decides the ratio side via
+    multiplication (`latest_value >= baseline * growth_factor`) instead of
+    division-then-compare, avoiding the imprecision entirely; `ratio` is
+    still computed separately purely for the display string. Independent
+    code review found this reappearing as a fourth instance of the same
+    bug class this file has now fixed four times over (see
+    `_is_trending_up`'s own docstring)."""
+    from dataclasses import replace as dc_replace
+
+    from exadoctor.collectors.models import CollectionResult
+
+    # Floor set low enough that only the ratio-side imprecision is under
+    # test here, not the (already-covered) gap-rounding floor.
+    policy = dc_replace(DEFAULT_POLICY, resource_trend_min_absolute_cpu_percent=1.0)
+    n = DEFAULT_POLICY.min_samples_for_class_statistics
+    rows = [monitor_daily_sample(DB_TIME - timedelta(days=n - i), cpu_avg_percent=2.2) for i in range(n - 1)]
+    rows.append(monitor_daily_sample(DB_TIME, cpu_avg_percent=3.3))
+    snapshot = make_snapshot(monitor_daily=CollectionResult("EXA_MONITOR_DAILY", "PUBLIC", True, None, rows))
+    findings = evaluate_resource_trend(snapshot, policy)
+    assert any(f.status == FindingStatus.WARNING and "CPU" in f.title for f in findings)
+
+
 def test_resource_trend_compares_against_latest_day_not_an_older_spike():
     from exadoctor.collectors.models import CollectionResult
 
@@ -691,6 +720,29 @@ def test_storage_growth_warns_on_unusual_growth():
     assert findings[0].status == FindingStatus.WARNING
 
 
+def test_storage_growth_ratio_alone_does_not_warn_on_a_trivial_absolute_difference():
+    """Regression test for the missing-floor bug found by independent code
+    review: STORAGE-GROWTH-001 previously checked only `ratio <
+    storage_growth_factor`, with no absolute floor at all -- unlike every
+    sibling trend rule in this file (SQL-SLOW-001/SQL-TEMP-001/
+    SYS-RESOURCE-TREND-001/SQL-WORKLOAD-TREND-001), each of which requires
+    BOTH a ratio threshold AND an absolute floor. A dev/test instance
+    moving from 0.2 GiB to 0.35 GiB (1.75x, comfortably above the 1.5x
+    growth factor) would previously trigger a WARNING for a clinically
+    meaningless absolute change. Now refactored onto the shared
+    `_is_trending_up` helper (same as SYS-RESOURCE-TREND-001/
+    SQL-WORKLOAD-TREND-001), so the absolute gap must also clear
+    `storage_growth_min_absolute_gib`."""
+    from exadoctor.collectors.models import CollectionResult
+
+    n = DEFAULT_POLICY.min_samples_for_class_statistics
+    rows = [db_size_sample(DB_TIME - timedelta(days=n - i), storage_size_avg_gib=0.2) for i in range(n - 1)]
+    rows.append(db_size_sample(DB_TIME, storage_size_avg_gib=0.35))
+    snapshot = make_snapshot(storage=CollectionResult("EXA_DB_SIZE_DAILY", "PUBLIC", True, None, rows))
+    findings = evaluate_storage_growth(snapshot, DEFAULT_POLICY)
+    assert findings[0].status == FindingStatus.PASS
+
+
 # ---- SYS-RAM-SIZING-001 ---------------------------------------------------
 
 
@@ -706,6 +758,29 @@ def test_ram_sizing_not_evaluated_across_multiple_clusters():
     rows = [db_size_sample(DB_TIME, recommended_db_ram_size_avg_gib=2.0)]
     rows.append(db_size_sample(DB_TIME, recommended_db_ram_size_avg_gib=2.0, cluster_name="SECONDARY"))
     snapshot = make_snapshot(storage=CollectionResult("EXA_DB_SIZE_DAILY", "PUBLIC", True, None, rows))
+    findings = evaluate_ram_sizing(snapshot, DEFAULT_POLICY)
+    assert findings[0].status == FindingStatus.NOT_EVALUATED
+    assert "cluster" in findings[0].summary.lower()
+
+
+def test_ram_sizing_not_evaluated_across_multiple_clusters_in_system_events():
+    """`evaluate_ram_sizing` has TWO independent `_multi_cluster_reason`
+    guard call sites -- one for `storage_rows` (covered by the test above)
+    and a second, separate one for `actual_events` (EXA_SYSTEM_EVENTS).
+    This proves the second guard independently, with a clean single-cluster
+    `storage_result` so the first guard passes through, but two distinct
+    `cluster_name` values in `system_events`."""
+    from exadoctor.collectors.models import CollectionResult
+
+    rows = [db_size_sample(DB_TIME, recommended_db_ram_size_avg_gib=250.0)]
+    events = [
+        system_event(DB_TIME, db_ram_size_gib=100.0, cluster_name="MAIN"),
+        system_event(DB_TIME, db_ram_size_gib=100.0, cluster_name="SECONDARY"),
+    ]
+    snapshot = make_snapshot(
+        storage=CollectionResult("EXA_DB_SIZE_DAILY", "PUBLIC", True, None, rows),
+        system_events=CollectionResult("EXA_SYSTEM_EVENTS", "PUBLIC", True, None, events),
+    )
     findings = evaluate_ram_sizing(snapshot, DEFAULT_POLICY)
     assert findings[0].status == FindingStatus.NOT_EVALUATED
     assert "cluster" in findings[0].summary.lower()
@@ -898,6 +973,39 @@ def test_session_auth_fail_groups_by_user_and_host_separately():
     assert {f.status for f in findings} == {FindingStatus.INFO}
 
 
+def test_session_auth_fail_summary_is_pseudonym_safe_after_anonymize():
+    """SESSION-AUTH-FAIL-001 embeds `user_name`/`host` directly into
+    `Finding.summary` text -- found dangerous by independent code review
+    specifically because this project's own established principle is to
+    anonymize BEFORE running rules (there is no reliable way to scrub
+    already-generated finding text afterward). Only SESSION-LONG-001 had an
+    end-to-end test proving this (test_cli_scan.py); this proves it for
+    SESSION-AUTH-FAIL-001 specifically, at the rule level: anonymize the
+    Snapshot first, then run the rule, and confirm the resulting summary
+    carries a pseudonym and never the raw identity values."""
+    from exadoctor.collectors.models import CollectionResult
+
+    real_user = "JDOE_ACME_ADMIN"
+    real_host = "10.55.4.9"
+    n = DEFAULT_POLICY.failed_login_recurrence_threshold
+    rows = [
+        session_history_record(
+            i, DB_TIME, success=False, user_name=real_user, host=real_host, error_code="08004"
+        )
+        for i in range(n)
+    ]
+    snapshot = make_snapshot(session_history=CollectionResult("EXA_DBA_SESSIONS_LAST_DAY", "PUBLIC", True, None, rows))
+
+    anonymized_snapshot = anonymize_snapshot(snapshot).snapshot
+    findings = evaluate_session_auth_failures(anonymized_snapshot, DEFAULT_POLICY)
+
+    assert findings[0].status == FindingStatus.WARNING
+    assert "USER_" in findings[0].summary
+    assert "HOST_" in findings[0].summary
+    assert real_user not in findings[0].summary
+    assert real_host not in findings[0].summary
+
+
 # ---- SESSION-TERMINATED-001 -------------------------------------------------
 
 
@@ -954,6 +1062,47 @@ def test_session_terminated_at_recurrence_threshold_is_warning():
     findings = evaluate_session_forced_termination(snapshot, DEFAULT_POLICY)
     assert findings[0].status == FindingStatus.WARNING
     assert findings[0].evidence[0].value == n
+
+
+def test_session_terminated_summary_is_pseudonym_safe_after_anonymize():
+    """SESSION-TERMINATED-001 does not itself embed `user_name` into
+    `Finding.summary` (it groups by error_code, not user/host), but its row
+    source (`session_history`) does carry `user_name`/`host`, and this rule
+    reads the same rows SESSION-AUTH-FAIL-001 does -- worth proving
+    end-to-end for this rule too, same as SESSION-AUTH-FAIL-001 above and
+    SESSION-LONG-001 in test_cli_scan.py. Uses a `SUCCESS=True` row with
+    `ERROR_CODE` set (the documented forced-termination signature)."""
+    from exadoctor.collectors.models import CollectionResult
+
+    real_user = "JDOE_ACME_ADMIN"
+    real_host = "10.55.4.9"
+    n = DEFAULT_POLICY.forced_termination_recurrence_threshold
+    rows = [
+        session_history_record(
+            i,
+            DB_TIME,
+            success=True,
+            user_name=real_user,
+            host=real_host,
+            error_code="R0033",
+            error_text="Connection lost after idle timeout.",
+        )
+        for i in range(n)
+    ]
+    snapshot = make_snapshot(session_history=CollectionResult("EXA_DBA_SESSIONS_LAST_DAY", "PUBLIC", True, None, rows))
+
+    anonymized_snapshot = anonymize_snapshot(snapshot).snapshot
+    findings = evaluate_session_forced_termination(anonymized_snapshot, DEFAULT_POLICY)
+
+    assert findings[0].status == FindingStatus.WARNING
+    assert real_user not in findings[0].summary
+    assert real_host not in findings[0].summary
+    # This rule's own summary text doesn't embed user/host, only error_code
+    # -- confirm the anonymized rows themselves carry the pseudonym (proving
+    # anonymize_snapshot actually ran against this source), even though this
+    # rule's summary wouldn't leak the raw value either way.
+    assert anonymized_snapshot.session_history.rows[0].user_name.startswith("USER_")
+    assert anonymized_snapshot.session_history.rows[0].host.startswith("HOST_")
 
 
 # ---- SQL-WORKLOAD-TREND-001 -------------------------------------------------
