@@ -1,4 +1,7 @@
-"""`exadoctor query <SESSION_ID> <STMT_ID>` -- deep query root-cause analysis (Milestone 9)."""
+"""`exadoctor query <SESSION_ID> [STMT_ID]` -- deep query root-cause
+analysis (Milestone 9), or, with STMT_ID omitted, a listing of that
+session's statements to help pick one (added after a user asked how
+they're supposed to find a STMT_ID when all they have is a SESSION_ID)."""
 
 from __future__ import annotations
 
@@ -10,13 +13,13 @@ from exadoctor.cli.ai import maybe_explain
 from exadoctor.cli.errors import handle_exadoctor_errors
 from exadoctor.connection.config import ConnectionConfig
 from exadoctor.connection.gateway import ReadOnlyGateway
-from exadoctor.profile.analyzer import analyze_query
-from exadoctor.report.query_text import render_query_text
+from exadoctor.profile.analyzer import analyze_query, list_session_statements
+from exadoctor.report.query_text import render_query_text, render_session_statements_text
 
 
 @click.command("query")
 @click.argument("session_id", type=int)
-@click.argument("stmt_id", type=int)
+@click.argument("stmt_id", type=int, required=False, default=None)
 @click.option(
     "--format",
     "output_format",
@@ -37,9 +40,24 @@ from exadoctor.report.query_text import render_query_text
     ),
 )
 @handle_exadoctor_errors
-def query_command(session_id: int, stmt_id: int, output_format: str, explain: bool) -> None:
-    """Deep root-cause analysis for one statement, identified by SESSION_ID and STMT_ID."""
+def query_command(session_id: int, stmt_id: int | None, output_format: str, explain: bool) -> None:
+    """Deep root-cause analysis for one statement, identified by SESSION_ID and STMT_ID.
+
+    STMT_ID may be omitted if you only have a SESSION_ID (e.g. from
+    SESSION-LONG-001, which never carries a stmt_id) -- this then lists
+    the statements that session ran, so you can pick one to drill into.
+    """
     config = ConnectionConfig.from_env()
+
+    if stmt_id is None:
+        with ReadOnlyGateway(config) as gateway:
+            result = list_session_statements(gateway, session_id)
+        if output_format == "json":
+            click.echo(json.dumps(result.to_dict(), indent=2))
+        else:
+            click.echo(render_session_statements_text(result))
+        return
+
     with ReadOnlyGateway(config) as gateway:
         analysis = analyze_query(gateway, session_id, stmt_id)
 

@@ -23,7 +23,8 @@ command's own code path touch it").
 | `capabilities` | Probes existence/access on every registered public source (`exadoctor.capabilities.sources.PUBLIC_SOURCES`) — 16 tables in total, listed in [`capability-matrix.md`](capability-matrix.md). Most of these are checked for availability only; not all are actually collected elsewhere. |
 | `scan` | `EXA_METADATA`, `EXA_PARAMETERS`, `EXA_ALL_SESSIONS`, `EXA_DBA_SESSIONS_LAST_DAY`, `EXA_SQL_LAST_DAY`, `EXA_SQL_DAILY`, `EXA_MONITOR_LAST_DAY`, `EXA_MONITOR_DAILY`, `EXA_DB_SIZE_DAILY`, `EXA_USAGE_LAST_DAY`, `EXA_SYSTEM_EVENTS`, `EXA_DBA_TRANSACTION_CONFLICTS` — one collector each, see `exadoctor.models.snapshot.build_snapshot`. |
 | `baseline create`/`compare`/`history` | Same collection as `scan` (`build_snapshot` is reused), but `compare`/`history` only ever diff three of those fields: workload duration by class and TEMP usage (both from `EXA_SQL_LAST_DAY`) and storage size (from `EXA_DB_SIZE_DAILY`). The rest of the snapshot is saved to the local baseline store but not compared. |
-| `query` | `EXA_SQL_LAST_DAY` (that one statement's own row) plus `EXA_DBA_PROFILE_LAST_DAY`/`EXA_DBA_PROFILE_RUNNING` (its profile parts, whichever source actually has rows for that session/statement). |
+| `query SESSION_ID STMT_ID` | `EXA_SQL_LAST_DAY` (that one statement's own row) plus `EXA_DBA_PROFILE_LAST_DAY`/`EXA_DBA_PROFILE_RUNNING` (its profile parts, whichever source actually has rows for that session/statement). |
+| `query SESSION_ID` (STMT_ID omitted) | `EXA_SQL_LAST_DAY` only, filtered to that `SESSION_ID` -- a plain listing (no profile lookup, no rules run) to help find a `STMT_ID` worth a deep look. |
 
 One source registered for `capabilities` is **not** read by anything
 else in this build: `EXA_DBA_SESSIONS` (probed for the "enhanced,

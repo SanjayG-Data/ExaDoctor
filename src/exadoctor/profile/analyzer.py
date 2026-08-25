@@ -38,6 +38,47 @@ def _lookup_workload_row(gateway: SqlGateway, session_id: int, stmt_id: int) -> 
 
 
 @dataclass
+class SessionStatementList:
+    """Result of `list_session_statements` -- every statement a session ran
+    within `EXA_SQL_LAST_DAY`'s 24-hour window, for a user who has a
+    SESSION_ID (e.g. from SESSION-LONG-001, which never has a stmt_id) but
+    doesn't yet know which STMT_ID is worth a deep `analyze_query` look.
+    """
+
+    session_id: int
+    available: bool
+    reason: str | None
+    statements: list[SqlStatement]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "available": self.available,
+            "reason": self.reason,
+            "statements": [json_safe(s) for s in self.statements],
+        }
+
+
+def list_session_statements(gateway: SqlGateway, session_id: int) -> SessionStatementList:
+    # session_id is coerced to int by the CLI (click.argument(type=int))
+    # before reaching here, so this cannot carry SQL metacharacters.
+    sql = (
+        f'SELECT {_WORKLOAD_COLUMNS_CLAUSE} FROM "EXA_STATISTICS"."EXA_SQL_LAST_DAY" '
+        f'WHERE "SESSION_ID" = {int(session_id)} ORDER BY "START_TIME"'
+    )
+    try:
+        result = gateway.execute(sql)
+    except ExaDoctorError as exc:
+        return SessionStatementList(session_id=session_id, available=False, reason=str(exc), statements=[])
+    return SessionStatementList(
+        session_id=session_id,
+        available=True,
+        reason=None,
+        statements=[row_to_sql_statement(row) for row in result.rows],
+    )
+
+
+@dataclass
 class QueryAnalysis:
     session_id: int
     stmt_id: int

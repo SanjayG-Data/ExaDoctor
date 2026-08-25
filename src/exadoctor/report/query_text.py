@@ -2,8 +2,52 @@
 
 from __future__ import annotations
 
-from exadoctor.profile.analyzer import QueryAnalysis
+from exadoctor.profile.analyzer import QueryAnalysis, SessionStatementList
 from exadoctor.report.terminal import render_ai_explanation_block, render_findings_block
+
+# A genuinely long-lived or pooled session can run hundreds/thousands of
+# statements in EXA_SQL_LAST_DAY's 24h window -- confirmed live (80 rows
+# for one moderately active local session). Same "cap, and say so" policy
+# this project already applies elsewhere (e.g. RulePolicy.
+# max_findings_per_rule) rather than dumping an unusably long terminal
+# listing. This caps only the text *display*; --format json always
+# returns every statement.
+MAX_STATEMENTS_SHOWN = 50
+
+
+def render_session_statements_text(result: SessionStatementList) -> str:
+    """Renders `exadoctor query SESSION_ID` (STMT_ID omitted) -- a listing
+    to help a user who only has a session_id (e.g. from SESSION-LONG-001,
+    which never carries a stmt_id) pick a statement worth a deep look."""
+    lines = ["EXADOCTOR SESSION STATEMENTS", "", f"Session: {result.session_id}", ""]
+
+    if not result.available:
+        lines.append(f"Not available: {result.reason or 'EXA_SQL_LAST_DAY unavailable'}.")
+        return "\n".join(lines).rstrip() + "\n"
+
+    if not result.statements:
+        lines.append("No statements found for this session in EXA_SQL_LAST_DAY's 24-hour window.")
+        return "\n".join(lines).rstrip() + "\n"
+
+    total = len(result.statements)
+    # Statements are already sorted ascending by START_TIME (see
+    # list_session_statements) -- the tail is the most recent activity,
+    # generally the most relevant slice to show when truncating.
+    shown = result.statements[-MAX_STATEMENTS_SHOWN:] if total > MAX_STATEMENTS_SHOWN else result.statements
+
+    lines.append(f"{total} statement(s) found -- pick a STMT_ID and re-run with it:")
+    if len(shown) < total:
+        lines.append(f"(showing the {len(shown)} most recent; {total - len(shown)} older not shown -- use --format json for the complete list)")
+    lines.append("")
+    lines.append(f"  {'STMT_ID':<9}{'COMMAND':<14}{'SUCCESS':<9}{'DURATION':>10}  START_TIME")
+    for s in shown:
+        duration = f"{s.duration_seconds:.3f}s" if s.duration_seconds is not None else "-"
+        start = s.start_time.isoformat() if s.start_time else "-"
+        lines.append(f"  {s.stmt_id:<9}{s.command_name:<14}{str(s.success):<9}{duration:>10}  {start}")
+    lines.append("")
+    lines.append(f"Drill into one: exadoctor query {result.session_id} <STMT_ID>")
+
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def render_query_text(analysis: QueryAnalysis, ai_explanation: str | None = None) -> str:

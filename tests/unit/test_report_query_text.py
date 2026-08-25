@@ -17,9 +17,9 @@ from datetime import datetime
 
 from exadoctor.collectors.models import SqlStatement
 from exadoctor.models.finding import Evidence, Finding, FindingStatus
-from exadoctor.profile.analyzer import QueryAnalysis
+from exadoctor.profile.analyzer import QueryAnalysis, SessionStatementList
 from exadoctor.profile.models import QueryProfile, QueryProfilePart
-from exadoctor.report.query_text import render_query_text
+from exadoctor.report.query_text import render_query_text, render_session_statements_text
 
 
 def _workload() -> SqlStatement:
@@ -223,3 +223,55 @@ def test_render_query_text_omits_ai_section_when_not_given() -> None:
     )
     text = render_query_text(analysis)
     assert "AI EXPLANATION" not in text
+
+
+# --- render_session_statements_text (query SESSION_ID, no STMT_ID) --------
+
+
+def test_render_session_statements_text_lists_every_statement() -> None:
+    second = _workload()
+    second.stmt_id = 8
+    second.command_name = "COMMIT"
+    result = SessionStatementList(session_id=42, available=True, reason=None, statements=[_workload(), second])
+    text = render_session_statements_text(result)
+
+    assert "EXADOCTOR SESSION STATEMENTS" in text
+    assert "Session: 42" in text
+    assert "2 statement(s) found" in text
+    assert "SELECT" in text and "COMMIT" in text
+    assert "Drill into one: exadoctor query 42 <STMT_ID>" in text
+
+
+def test_render_session_statements_text_handles_no_statements() -> None:
+    result = SessionStatementList(session_id=42, available=True, reason=None, statements=[])
+    text = render_session_statements_text(result)
+    assert "No statements found" in text
+
+
+def test_render_session_statements_text_handles_unavailable() -> None:
+    result = SessionStatementList(session_id=42, available=False, reason="ConnectionFailedError: boom", statements=[])
+    text = render_session_statements_text(result)
+    assert "Not available" in text
+    assert "boom" in text
+
+
+def test_render_session_statements_text_caps_a_long_listing_and_discloses_it() -> None:
+    """A pooled/long-lived session can run hundreds of statements in one
+    day -- the text display must cap and say so (this project's own
+    "no silent caps" discipline), not dump an unusable wall of rows."""
+    from exadoctor.report.query_text import MAX_STATEMENTS_SHOWN
+
+    statements = []
+    for i in range(MAX_STATEMENTS_SHOWN + 10):
+        s = _workload()
+        s.stmt_id = i
+        statements.append(s)
+    result = SessionStatementList(session_id=42, available=True, reason=None, statements=statements)
+    text = render_session_statements_text(result)
+
+    assert f"{MAX_STATEMENTS_SHOWN + 10} statement(s) found" in text
+    assert f"showing the {MAX_STATEMENTS_SHOWN} most recent" in text
+    assert "10 older not shown" in text
+    # the shown rows must be the tail (most recent), not the head
+    assert f"  {MAX_STATEMENTS_SHOWN + 9:<9}" in text or str(MAX_STATEMENTS_SHOWN + 9) in text
+    assert "  0        " not in text

@@ -84,7 +84,7 @@ curl -fsSL https://raw.githubusercontent.com/SanjayG-Data/ExaDoctor/main/install
 ```
 exadoctor capabilities             probe what this instance will let you diagnose
 exadoctor scan                     full health scan, reported as findings + evidence
-exadoctor query SESSION_ID STMT_ID deep root-cause analysis for one statement
+exadoctor query SESSION_ID [STMT_ID]  deep analysis for one statement, or list a session's statements
 exadoctor baseline create NAME     save a named snapshot for later comparison
 exadoctor baseline compare NAME    diff a fresh snapshot against a saved one
 exadoctor baseline history NAME    trend across every saved version of NAME
@@ -209,7 +209,7 @@ exadoctor scan --format html --output report.html
 exadoctor scan --anonymize
 ```
 
-### `exadoctor query SESSION_ID STMT_ID`
+### `exadoctor query SESSION_ID [STMT_ID]`
 
 Deep root-cause analysis for one specific statement, once `scan` (or your
 own monitoring) has pointed you at a `SESSION_ID`/`STMT_ID` worth
@@ -221,6 +221,26 @@ Findings that point at a specific statement (e.g. `SQL-SLOW-001`,
 evidence line: `evidence: DURATION=... [EXA_SQL_LAST_DAY] (drill in:
 exadoctor query <session_id> <stmt_id>)` -- copy those two numbers
 straight into the command below.
+
+**Only have a `SESSION_ID`?** (e.g. from `SESSION-LONG-001`, which never
+carries a `stmt_id`.) Omit `STMT_ID` and `query` lists every statement
+that session ran instead, so you can pick one:
+
+```
+$ exadoctor query 1874221288481226752
+EXADOCTOR SESSION STATEMENTS
+
+Session: 1874221288481226752
+
+3 statement(s) found -- pick a STMT_ID and re-run with it:
+
+  STMT_ID  COMMAND       SUCCESS    DURATION  START_TIME
+  12       SELECT        True          0.233s  2026-08-24T14:53:06.174000
+  13       COMMIT        True          0.001s  2026-08-24T14:53:06.410000
+  14       SELECT        False         0.012s  2026-08-24T15:02:11.902000
+
+Drill into one: exadoctor query 1874221288481226752 <STMT_ID>
+```
 
 ```
 $ exadoctor query 1874233022592647168 1

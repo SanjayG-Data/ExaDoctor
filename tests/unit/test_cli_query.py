@@ -24,3 +24,24 @@ def test_query_reports_missing_configuration_cleanly():
     )
     assert result.exit_code == 1
     assert "Missing required connection settings" in result.output
+
+
+def test_query_usage_shows_stmt_id_as_optional():
+    """STMT_ID became optional after a user asked how to find one when all
+    they have is a SESSION_ID -- click's own usage line is the simplest
+    place to prove the CLI signature actually reflects that."""
+    result = CliRunner().invoke(cli, ["query", "--help"])
+    assert "SESSION_ID [STMT_ID]" in result.output
+
+
+def test_query_without_stmt_id_still_reaches_the_connection_step():
+    """SESSION_ID alone must be accepted by click (not rejected as a
+    missing-argument usage error) and proceed to the same connection-config
+    check as the two-argument form."""
+    result = CliRunner().invoke(
+        cli,
+        ["query", "1"],
+        env={"EXADOCTOR_HOST": "", "EXADOCTOR_USER": "", "EXADOCTOR_PASSWORD": ""},
+    )
+    assert result.exit_code == 1
+    assert "Missing required connection settings" in result.output

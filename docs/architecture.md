@@ -41,12 +41,17 @@ independent-failure pattern is used one level down: `probe_all` and
 
 ## The query analyzer is a parallel, narrower pipeline
 
-`exadoctor query SESSION_ID STMT_ID` does not go through `Snapshot` at all.
-It looks up one `EXA_SQL_LAST_DAY` row and one `EXA_DBA_PROFILE_LAST_DAY`/
-`EXA_DBA_PROFILE_RUNNING` profile (bounded by `SESSION_ID`/`STMT_ID`, never
-a full-table scan), correlates them into a `QueryAnalysis`
-(`exadoctor.profile.analyzer`), and runs a separate, smaller set of deep
-per-statement rules (`exadoctor.profile.rules`) against the `QueryProfile`.
+`exadoctor query SESSION_ID [STMT_ID]` does not go through `Snapshot` at
+all. With `STMT_ID`, it looks up one `EXA_SQL_LAST_DAY` row and one
+`EXA_DBA_PROFILE_LAST_DAY`/`EXA_DBA_PROFILE_RUNNING` profile (bounded by
+`SESSION_ID`/`STMT_ID`, never a full-table scan), correlates them into a
+`QueryAnalysis` (`exadoctor.profile.analyzer`), and runs a separate,
+smaller set of deep per-statement rules (`exadoctor.profile.rules`)
+against the `QueryProfile`. Without `STMT_ID` (added after a user asked
+how they're meant to find one when all they have is a session_id, e.g.
+from `SESSION-LONG-001`), it instead lists that session's
+`EXA_SQL_LAST_DAY` rows (`list_session_statements`, same module) -- a
+plain listing, not a diagnostic pipeline, so it produces no `Finding`s.
 
 ## Why `$EXA_*` never appears in this pipeline
 

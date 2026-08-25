@@ -1,6 +1,7 @@
 from exadoctor.connection.gateway import QueryResult
+from exadoctor.errors import ConnectionFailedError
 from exadoctor.models.finding import FindingStatus
-from exadoctor.profile.analyzer import analyze_query
+from exadoctor.profile.analyzer import analyze_query, list_session_statements
 
 
 class ScriptedGateway:
@@ -77,6 +78,67 @@ def test_analyze_query_reports_not_evaluated_when_no_profile():
     assert analysis.profile_available is False
     assert analysis.findings[0].status == FindingStatus.NOT_EVALUATED
     assert analysis.findings[0].id == "PERF-NO-PROFILE"
+
+
+_SECOND_WORKLOAD_ROW = (
+    1874035687682015232,
+    134,
+    "COMMIT",
+    "TRANSACTION",
+    0.001,
+    None,
+    None,
+    1.0,
+    None,
+    0.0,
+    0.0,
+    0.0,
+    True,
+    None,
+    None,
+    0,
+    "MAIN",
+)
+
+
+def test_list_session_statements_returns_every_row_for_the_session():
+    gateway = ScriptedGateway(
+        {"EXA_SQL_LAST_DAY": QueryResult(columns=[], rows=[_WORKLOAD_ROW, _SECOND_WORKLOAD_ROW])}
+    )
+    result = list_session_statements(gateway, session_id=1874035687682015232)
+
+    assert result.available is True
+    assert result.session_id == 1874035687682015232
+    assert [s.stmt_id for s in result.statements] == [133, 134]
+
+
+def test_list_session_statements_empty_for_a_session_with_no_statements():
+    gateway = ScriptedGateway({"EXA_SQL_LAST_DAY": QueryResult(columns=[], rows=[])})
+    result = list_session_statements(gateway, session_id=999)
+
+    assert result.available is True
+    assert result.statements == []
+
+
+def test_list_session_statements_degrades_gracefully_on_query_failure():
+    class FailingGateway:
+        def execute(self, sql: str) -> QueryResult:
+            raise ConnectionFailedError("object EXA_SQL_LAST_DAY not found")
+
+    result = list_session_statements(FailingGateway(), session_id=1)
+
+    assert result.available is False
+    assert "not found" in (result.reason or "")
+    assert result.statements == []
+
+
+def test_list_session_statements_to_dict_is_json_serializable():
+    import json
+
+    gateway = ScriptedGateway({"EXA_SQL_LAST_DAY": QueryResult(columns=[], rows=[_WORKLOAD_ROW])})
+    result = list_session_statements(gateway, session_id=1874035687682015232)
+    payload = json.dumps(result.to_dict())
+    assert "SELECT" in payload
 
 
 def test_analyze_query_to_dict_is_json_serializable():
