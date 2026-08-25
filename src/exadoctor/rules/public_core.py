@@ -909,6 +909,38 @@ def evaluate_sys_temp(snapshot: Snapshot, policy: RulePolicy) -> list[Finding]:
     return findings
 
 
+def _multi_cluster_reason(rows) -> str | None:
+    """Returns a NOT_EVALUATED reason string if `rows` spans more than one
+    distinct `cluster_name`, else None.
+
+    EXA_DB_SIZE_DAILY/EXA_MONITOR_DAILY/EXA_SQL_DAILY/EXA_SYSTEM_EVENTS are
+    all documented as per-cluster tables (one row per (interval,
+    CLUSTER_NAME, ...)). Every trend/sizing rule using them aggregates
+    purely by `interval_start`, with no CLUSTER_NAME partitioning -- on a
+    genuine multi-cluster Exasol deployment (Exasol does support more than
+    one cluster sharing storage, e.g. a reporting/backup cluster alongside
+    the primary one), rows from different clusters sharing a day would
+    otherwise be silently blended: summed together in SQL-WORKLOAD-
+    TREND-001, or arbitrarily superseded by whichever row a tie-unaware
+    sort happens to put last in STORAGE-GROWTH-001/SYS-RESOURCE-TREND-001/
+    SYS-RAM-SIZING-001. Every instance tested so far is single-cluster, so
+    this was never observed live -- found by independent code review as a
+    real correctness gap rather than a live bug. Ambiguous evidence should
+    not silently produce a specific wrong number, the same principle this
+    project already applies to missing evidence (NOT_EVALUATED, never a
+    guessed PASS) -- so this degrades to NOT_EVALUATED rather than picking
+    one cluster arbitrarily.
+    """
+    clusters = {r.cluster_name for r in rows if r.cluster_name is not None}
+    if len(clusters) > 1:
+        return (
+            f"Multiple distinct CLUSTER_NAME values found in this window ({', '.join(sorted(clusters))}) -- "
+            "this rule assumes a single-cluster deployment and does not yet partition trend/sizing analysis "
+            "by cluster, so it cannot produce a reliable comparison here."
+        )
+    return None
+
+
 def evaluate_storage_growth(snapshot: Snapshot, policy: RulePolicy) -> list[Finding]:
     result = snapshot.storage
     if not result.available:
@@ -918,6 +950,20 @@ def evaluate_storage_growth(snapshot: Snapshot, policy: RulePolicy) -> list[Find
                 "Unusual database growth",
                 "capacity",
                 result.reason or "EXA_DB_SIZE_DAILY unavailable",
+                requirements=["EXA_DB_SIZE_DAILY"],
+            )
+        ]
+
+    multi_cluster_reason = _multi_cluster_reason(result.rows)
+    if multi_cluster_reason is not None:
+        return [
+            Finding(
+                id="STORAGE-GROWTH-001",
+                title="Cannot evaluate growth across multiple clusters",
+                category="capacity",
+                status=FindingStatus.NOT_EVALUATED,
+                summary=multi_cluster_reason,
+                confidence="LOW",
                 requirements=["EXA_DB_SIZE_DAILY"],
             )
         ]
@@ -1007,12 +1053,53 @@ def evaluate_storage_growth(snapshot: Snapshot, policy: RulePolicy) -> list[Find
     ]
 
 
-# (metric attribute, display name, unit, policy absolute-floor attribute)
+def _is_trending_up(latest_value: float, baseline: float, growth_factor: float, floor: float, round_ndigits: int | None) -> tuple[bool, str]:
+    """Shared "latest value vs. trailing-history median" trend check, used
+    by every rule that compares a latest daily figure against a trailing
+    median with both a ratio threshold and an absolute floor
+    (SYS-RESOURCE-TREND-001, SQL-WORKLOAD-TREND-001).
+
+    A ratio computed off a zero baseline is undefined -- the absolute
+    floor alone decides in that case (this matters most for a metric like
+    swap, where zero is the normal/healthy baseline, so even a small
+    newly-appearing amount is itself the signal, not something that needs
+    to be large relative to a baseline that should never be positive).
+
+    When a ratio IS available, `round_ndigits` rounds the raw
+    `latest_value - baseline` gap before comparing it against `floor`.
+    This is not cosmetic: IEEE-754 subtraction of two decimal-scaled
+    floats (e.g. `5.1 - 3.6 == 1.4999999999999996`, not `1.5`) can silently
+    fail a floor comparison that should exactly clear it. This exact bug
+    class was found and fixed twice before, in SQL-SLOW-001/SQL-TEMP-001
+    (see their own `round()`-before-`&gt;=` comments) -- then reappeared a
+    third time in the first two callers of this function, before this
+    function existed, per independent code review. Centralizing the
+    comparison here means that fix now only has to be made once. Pass
+    `round_ndigits=None` when the gap is already exact (e.g. a sum of
+    integer counts), where rounding would be a no-op anyway.
+    """
+    ratio = latest_value / baseline if baseline > 0 else None
+    if ratio is not None:
+        gap = latest_value - baseline
+        if round_ndigits is not None:
+            gap = round(gap, round_ndigits)
+        is_trending_up = ratio >= growth_factor and gap >= floor
+        comparison_phrase = f"{ratio:.2f}x the"
+    else:
+        is_trending_up = latest_value >= floor
+        comparison_phrase = "newly above the (previously zero)"
+    return is_trending_up, comparison_phrase
+
+
+# (metric attribute, display name, unit, policy absolute-floor attribute,
+# round_ndigits for the floor comparison -- all four EXA_MONITOR_DAILY
+# averages are DECIMAL(x,1) columns, so 1 decimal digit exactly matches
+# their real precision)
 _RESOURCE_TREND_METRICS = (
-    ("cpu_avg_percent", "CPU", "%", "resource_trend_min_absolute_cpu_percent"),
-    ("temp_db_ram_avg_mib", "TEMP DB RAM", "MiB", "resource_trend_min_absolute_temp_db_ram_mib"),
-    ("net_avg_mib_per_sec", "network", "MiB/s", "resource_trend_min_absolute_net_mib_per_sec"),
-    ("swap_avg_mib_per_sec", "swap", "MiB/s", "resource_trend_min_absolute_swap_mib_per_sec"),
+    ("cpu_avg_percent", "CPU", "%", "resource_trend_min_absolute_cpu_percent", 1),
+    ("temp_db_ram_avg_mib", "TEMP DB RAM", "MiB", "resource_trend_min_absolute_temp_db_ram_mib", 1),
+    ("net_avg_mib_per_sec", "network", "MiB/s", "resource_trend_min_absolute_net_mib_per_sec", 1),
+    ("swap_avg_mib_per_sec", "swap", "MiB/s", "resource_trend_min_absolute_swap_mib_per_sec", 1),
 )
 
 
@@ -1046,6 +1133,20 @@ def evaluate_resource_trend(snapshot: Snapshot, policy: RulePolicy) -> list[Find
             )
         ]
 
+    multi_cluster_reason = _multi_cluster_reason(result.rows)
+    if multi_cluster_reason is not None:
+        return [
+            Finding(
+                id="SYS-RESOURCE-TREND-001",
+                title="Cannot evaluate trend across multiple clusters",
+                category="system",
+                status=FindingStatus.NOT_EVALUATED,
+                summary=multi_cluster_reason,
+                confidence="LOW",
+                requirements=["EXA_MONITOR_DAILY"],
+            )
+        ]
+
     rows = sorted((s for s in result.rows if s.interval_start is not None), key=lambda s: s.interval_start)
     if len(rows) < policy.min_samples_for_class_statistics:
         return [
@@ -1064,7 +1165,7 @@ def evaluate_resource_trend(snapshot: Snapshot, policy: RulePolicy) -> list[Find
     history = rows[:-1]
 
     findings: list[Finding] = []
-    for attr, display_name, unit, floor_attr in _RESOURCE_TREND_METRICS:
+    for attr, display_name, unit, floor_attr, round_ndigits in _RESOURCE_TREND_METRICS:
         latest_value = getattr(latest, attr)
         history_values = [v for s in history if (v := getattr(s, attr)) is not None]
         if latest_value is None or len(history_values) < policy.min_samples_for_class_statistics - 1:
@@ -1072,16 +1173,9 @@ def evaluate_resource_trend(snapshot: Snapshot, policy: RulePolicy) -> list[Find
 
         baseline = statistics.median(history_values)
         floor = getattr(policy, floor_attr)
-        ratio = latest_value / baseline if baseline > 0 else None
-
-        if ratio is not None:
-            is_trending_up = ratio >= policy.resource_trend_growth_factor and (latest_value - baseline) >= floor
-            comparison_phrase = f"{ratio:.2f}x the"
-        else:
-            # Undefined ratio from a zero baseline -- the absolute floor
-            # alone decides (see docstring: this is exactly the swap case).
-            is_trending_up = latest_value >= floor
-            comparison_phrase = "newly above the (previously zero)"
+        is_trending_up, comparison_phrase = _is_trending_up(
+            latest_value, baseline, policy.resource_trend_growth_factor, floor, round_ndigits
+        )
 
         if not is_trending_up:
             continue
@@ -1190,6 +1284,19 @@ def evaluate_ram_sizing(snapshot: Snapshot, policy: RulePolicy) -> list[Finding]
                 requirements=["EXA_DB_SIZE_DAILY"],
             )
         ]
+    multi_cluster_reason = _multi_cluster_reason(storage_rows)
+    if multi_cluster_reason is not None:
+        return [
+            Finding(
+                id="SYS-RAM-SIZING-001",
+                title="Cannot evaluate sizing across multiple clusters",
+                category="capacity",
+                status=FindingStatus.NOT_EVALUATED,
+                summary=multi_cluster_reason,
+                confidence="LOW",
+                requirements=["EXA_DB_SIZE_DAILY"],
+            )
+        ]
     recommended = storage_rows[-1]
 
     events_result = snapshot.system_events
@@ -1201,6 +1308,19 @@ def evaluate_ram_sizing(snapshot: Snapshot, policy: RulePolicy) -> list[Finding]
         if events_result.available
         else []
     )
+    events_multi_cluster_reason = _multi_cluster_reason(actual_events)
+    if events_multi_cluster_reason is not None:
+        return [
+            Finding(
+                id="SYS-RAM-SIZING-001",
+                title="Cannot evaluate sizing across multiple clusters",
+                category="capacity",
+                status=FindingStatus.NOT_EVALUATED,
+                summary=events_multi_cluster_reason,
+                confidence="LOW",
+                requirements=["EXA_DB_SIZE_DAILY", "EXA_SYSTEM_EVENTS"],
+            )
+        ]
 
     if not actual_events:
         return [
@@ -1268,6 +1388,12 @@ def evaluate_ram_sizing(snapshot: Snapshot, policy: RulePolicy) -> list[Finding]
                 ],
                 confidence="HIGH",
                 requirements=["EXA_DB_SIZE_DAILY", "EXA_SYSTEM_EVENTS"],
+                limitations=[
+                    "EXA_SYSTEM_EVENTS only gains a new row on a cluster lifecycle event (startup/restart/"
+                    "backup/etc.), not on a periodic refresh -- if RAM was reallocated through a path that "
+                    "doesn't produce such an event, this figure could be stale relative to the true current "
+                    "provisioned RAM."
+                ],
                 documentation=["Exasol official sizing documentation: RECOMMENDED_DB_RAM_SIZE_* / DB_RAM_SIZE columns"],
             )
         ]
@@ -1304,7 +1430,11 @@ def evaluate_ram_sizing(snapshot: Snapshot, policy: RulePolicy) -> list[Finding]
             limitations=[
                 "Recommendation is based on the latest available EXA_DB_SIZE_DAILY row's data volume; "
                 "actual RAM is the most recent EXA_SYSTEM_EVENTS entry -- both are Exasol's own reported "
-                "figures, not ExaDoctor-invented thresholds."
+                "figures, not ExaDoctor-invented thresholds.",
+                "EXA_SYSTEM_EVENTS only gains a new row on a cluster lifecycle event (startup/restart/"
+                "backup/etc.), not on a periodic refresh -- if RAM was reallocated through a path that "
+                "doesn't produce such an event, this figure could be stale relative to the true current "
+                "provisioned RAM.",
             ],
             documentation=["Exasol official sizing documentation: RECOMMENDED_DB_RAM_SIZE_* / DB_RAM_SIZE columns"],
         )
@@ -1422,10 +1552,17 @@ def evaluate_session_long(snapshot: Snapshot, policy: RulePolicy) -> list[Findin
     return findings
 
 
-# (result-tuple index, display name, unit, policy absolute-floor attribute)
+# (result-tuple index, display name, unit, policy absolute-floor attribute,
+# round_ndigits for the floor comparison). Statement volume is a sum of
+# integer COUNTs stored as float -- exact, no rounding needed. The
+# execution-time proxy is a sum of COUNT * DURATION_AVG products (DURATION_
+# AVG is DECIMAL(12,3), i.e. millisecond precision) -- not itself a fixed
+# decimal scale once summed across groups, so round to milliseconds as a
+# defensive floor against float noise, same reasoning as SQL-SLOW-001's
+# own DURATION rounding.
 _WORKLOAD_TREND_METRICS = (
-    (0, "statement volume", "statements/day", "sql_workload_trend_min_absolute_count"),
-    (1, "total execution time", "seconds/day", "sql_workload_trend_min_absolute_duration_seconds"),
+    (0, "statement volume", "statements/day", "sql_workload_trend_min_absolute_count", None),
+    (1, "total execution time", "seconds/day", "sql_workload_trend_min_absolute_duration_seconds", 3),
 )
 
 
@@ -1462,6 +1599,20 @@ def evaluate_sql_workload_trend(snapshot: Snapshot, policy: RulePolicy) -> list[
             )
         ]
 
+    multi_cluster_reason = _multi_cluster_reason(result.rows)
+    if multi_cluster_reason is not None:
+        return [
+            Finding(
+                id="SQL-WORKLOAD-TREND-001",
+                title="Cannot evaluate trend across multiple clusters",
+                category="workload",
+                status=FindingStatus.NOT_EVALUATED,
+                summary=multi_cluster_reason,
+                confidence="LOW",
+                requirements=["EXA_SQL_DAILY"],
+            )
+        ]
+
     daily: dict = defaultdict(lambda: [0.0, 0.0])  # interval_start -> [total_count, total_duration_seconds]
     for r in result.rows:
         if r.interval_start is None:
@@ -1489,19 +1640,14 @@ def evaluate_sql_workload_trend(snapshot: Snapshot, policy: RulePolicy) -> list[
     history = days[:-1]
 
     findings: list[Finding] = []
-    for idx, display_name, unit, floor_attr in _WORKLOAD_TREND_METRICS:
+    for idx, display_name, unit, floor_attr, round_ndigits in _WORKLOAD_TREND_METRICS:
         latest_value = latest_values[idx]
         history_values = [v[idx] for _, v in history]
         baseline = statistics.median(history_values)
         floor = getattr(policy, floor_attr)
-        ratio = latest_value / baseline if baseline > 0 else None
-
-        if ratio is not None:
-            is_trending_up = ratio >= policy.sql_workload_trend_growth_factor and (latest_value - baseline) >= floor
-            comparison_phrase = f"{ratio:.2f}x the"
-        else:
-            is_trending_up = latest_value >= floor
-            comparison_phrase = "newly above the (previously zero)"
+        is_trending_up, comparison_phrase = _is_trending_up(
+            latest_value, baseline, policy.sql_workload_trend_growth_factor, floor, round_ndigits
+        )
 
         if not is_trending_up:
             continue

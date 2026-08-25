@@ -47,7 +47,7 @@ deployment target.
 
 - `Snapshot`, `Finding`, and the terminal/JSON/HTML reports never include
   the connecting user's password, by construction (see above).
-- Raw `SQL_TEXT` is not collected by any of the seven public collectors,
+- Raw `SQL_TEXT` is not collected by any of the twelve public collectors,
   the profile collector, or the query analyzer's workload lookup — none of
   their column lists include it, even though several source tables
   (`EXA_DBA_SESSIONS`, `EXA_DBA_PROFILE_LAST_DAY`, `EXA_DBA_PROFILE_
@@ -58,21 +58,29 @@ deployment target.
   displayed or used by any rule. Removed rather than redocumented, since
   nothing required it.)
 - `--anonymize` (on `scan`) replaces `DatabaseInfo.host`, every
-  `SessionInfo.user_name`, and every `cluster_name` field with a stable
-  pseudonym, applied *before* rules run — so rule-generated text (e.g.
-  `SESSION-LONG-001`'s summary, which embeds the session's username) is
-  already pseudonymized rather than needing an unreliable find-and-replace
-  pass afterward.
+  `user_name`/`host` field (`SessionInfo`, `SessionHistoryRecord`), every
+  `cluster_name` field, and `TransactionConflict.conflict_objects` with a
+  stable pseudonym, applied *before* rules run — so rule-generated text
+  (e.g. `SESSION-LONG-001`/`SESSION-AUTH-FAIL-001`'s summaries, which embed
+  a username) is already pseudonymized rather than needing an unreliable
+  find-and-replace pass afterward.
+  - **Found and fixed by independent code review**: three `Snapshot`
+    fields added after the anonymizer was first written
+    (`session_history`, `sql_daily`, `monitor_daily`, `system_events`)
+    were never wired into it, so `--anonymize` silently leaked real
+    usernames/IP addresses/cluster names through those sources until this
+    was caught and fixed (see `anonymizer.py`'s module docstring and
+    `IMPLEMENTATION_HISTORY.md`). Any future `Snapshot` field carrying a
+    user/host/cluster/schema/table value must be added to the anonymizer
+    in the same change that adds the field, not as a follow-up.
   - **Known limitation**: free-text fields (`SqlStatement.error_text`,
+    `SessionHistoryRecord.error_text`, `TransactionConflict.conflict_info`,
     `Evidence.context`) are not scrubbed — Exasol error messages can embed
     identity fragments (e.g. a table or user name), and there is no
     reliable way to redact those by string-scanning without either missing
     real values (different casing/quoting) or corrupting unrelated text.
     Treat an anonymized report's error text as still potentially sensitive
     and review it before sharing.
-  - Schema/table names are not yet anonymized because no current collector
-    field carries one — `PseudonymMapper` already exposes `schema`/`table`
-    categories for whenever a field like that is added.
 - The AI explanation layer (`--explain`) only ever receives a compact
   subset of `Finding` fields (id/status/title/summary/recommendation) —
   never database access, never raw evidence/limitations/documentation, and

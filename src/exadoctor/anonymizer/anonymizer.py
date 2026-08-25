@@ -14,15 +14,30 @@ pseudonym minted by `exadoctor.anonymizer.pseudonyms.PseudonymMapper`.
 
 Fields anonymized (identity-bearing, confirmed by reading
 `exadoctor.collectors.models` and `exadoctor.models.snapshot` field by
-field -- nothing here is guessed):
+field -- nothing here is guessed). This list previously went stale across
+three feature additions (`session_history`, `sql_daily`, `monitor_daily`,
+`system_events` were all added to `Snapshot` without a matching update
+here -- caught by independent code review, live-verified via `exadoctor
+scan --anonymize` leaking a real client IP and cluster names). Adding a
+Snapshot field that carries a user/host/cluster/schema/table value must
+come with a matching addition here in the same change -- do not defer it:
 
-    * DatabaseInfo.host               -> category "host"
-    * SessionInfo.user_name           -> category "user"
-    * SessionInfo.cluster_name        -> category "cluster"
-    * SqlStatement.cluster_name       -> category "cluster"
-    * MonitorSample.cluster_name      -> category "cluster"
-    * DbSizeDailySample.cluster_name  -> category "cluster"
-    * UsageSample.cluster_name        -> category "cluster"
+    * DatabaseInfo.host                  -> category "host"
+    * SessionInfo.user_name              -> category "user"
+    * SessionInfo.cluster_name           -> category "cluster"
+    * SessionHistoryRecord.user_name     -> category "user"
+    * SessionHistoryRecord.host          -> category "host"
+    * SessionHistoryRecord.cluster_name  -> category "cluster"
+    * SqlStatement.cluster_name          -> category "cluster"
+    * SqlDailySample.cluster_name        -> category "cluster"
+    * MonitorSample.cluster_name         -> category "cluster"
+    * MonitorDailySample.cluster_name    -> category "cluster"
+    * DbSizeDailySample.cluster_name     -> category "cluster"
+    * UsageSample.cluster_name           -> category "cluster"
+    * SystemEvent.cluster_name           -> category "cluster"
+    * TransactionConflict.conflict_objects -> category "table" (the whole
+      value, e.g. "SCHEMA.TABLE", is treated as one opaque identity string
+      -- see the free-text note below for why it isn't parsed further)
 
 Fields deliberately left alone, and why:
 
@@ -40,9 +55,10 @@ Fields deliberately left alone, and why:
       rather than as an identity value. Left untouched per "when unsure,
       leave it alone and note it" -- flag as a candidate category if
       real-world support sharing raises a concern here.
-    * SqlStatement.error_text and Evidence.context -- free text that CAN
-      embed identity fragments (e.g. "table CUSTOMERSCHEMA.ORDERS not
-      found", "insufficient privileges for user JDOE"), but there is no
+    * SqlStatement.error_text, SessionHistoryRecord.error_text,
+      TransactionConflict.conflict_info, and Evidence.context -- free text
+      that CAN embed identity fragments (e.g. "table CUSTOMERSCHEMA.ORDERS
+      not found", "insufficient privileges for user JDOE"), but there is no
       reliable way to find and redact those fragments by scanning free
       text: a naive substring-replace against the known pseudonym mapping
       is exactly the "unreliable string-replacement scanning" this task
@@ -51,11 +67,11 @@ Fields deliberately left alone, and why:
       structured field) or corrupt unrelated text (a real value that
       happens to be a common word or short identifier).
       **Known limitation**: this version does not scrub free-text fields.
-      A "support-shareable" Snapshot's `error_text`/`context` values may
-      still contain identity fragments and should be treated as sensitive
-      -- and reviewed by a human before sharing -- until a proper
-      parser-based approach (e.g. actually parsing the SQL error grammar)
-      is built.
+      A "support-shareable" Snapshot's `error_text`/`conflict_info`/
+      `context` values may still contain identity fragments and should be
+      treated as sensitive -- and reviewed by a human before sharing --
+      until a proper parser-based approach (e.g. actually parsing the SQL
+      error grammar) is built.
     * MetadataProperty (param_name/param_value) and Parameter
       (parameter_name/session_value/system_value) rows -- these carry
       Exasol system metadata/config names and values (e.g.
@@ -71,16 +87,13 @@ Fields deliberately left alone, and why:
       Evidence.source/metric/unit -- rule-authored, static text that is
       identical across every customer's report; not identity.
 
-Known gap in the underlying data model (not addressed here -- out of
-scope per this task's constraints, which forbid editing
-`exadoctor.collectors`/`exadoctor.models`): the roadmap's identity list
-also names schema and table names, but neither `SqlStatement` nor any
-other row model here currently carries a schema/table field -- no
-collector emits one today. `PseudonymMapper` already exposes "schema" and
-"table" as first-class categories (see pseudonyms.py) precisely so that
-whichever collector eventually adds such a field only needs one
-`mapper.pseudonym_for("schema", ...)` / `("table", ...)` call added here,
-with no redesign of the anonymizer itself.
+`TransactionConflict.conflict_objects` is exactly the schema/table field
+this docstring used to say didn't exist yet -- `PseudonymMapper` already
+exposed "schema" and "table" as first-class categories (see
+pseudonyms.py) precisely for this moment; it's now wired to "table"
+above. No row model currently carries schema and table as two separate
+fields, only this one combined string, so "schema" remains unused for
+now.
 """
 
 from __future__ import annotations
@@ -91,6 +104,7 @@ from dataclasses import dataclass
 from exadoctor.anonymizer.pseudonyms import (
     CATEGORY_CLUSTER,
     CATEGORY_HOST,
+    CATEGORY_TABLE,
     CATEGORY_USER,
     PseudonymMapper,
 )
@@ -136,13 +150,33 @@ def anonymize_snapshot(snapshot: Snapshot) -> AnonymizationResult:
         if session.cluster_name is not None:
             session.cluster_name = mapper.pseudonym_for(CATEGORY_CLUSTER, session.cluster_name)
 
+    for session_history_record in clone.session_history.rows:
+        if session_history_record.user_name is not None:
+            session_history_record.user_name = mapper.pseudonym_for(CATEGORY_USER, session_history_record.user_name)
+        if session_history_record.host is not None:
+            session_history_record.host = mapper.pseudonym_for(CATEGORY_HOST, session_history_record.host)
+        if session_history_record.cluster_name is not None:
+            session_history_record.cluster_name = mapper.pseudonym_for(
+                CATEGORY_CLUSTER, session_history_record.cluster_name
+            )
+
     for statement in clone.workload.rows:
         if statement.cluster_name is not None:
             statement.cluster_name = mapper.pseudonym_for(CATEGORY_CLUSTER, statement.cluster_name)
 
+    for sql_daily_sample in clone.sql_daily.rows:
+        if sql_daily_sample.cluster_name is not None:
+            sql_daily_sample.cluster_name = mapper.pseudonym_for(CATEGORY_CLUSTER, sql_daily_sample.cluster_name)
+
     for monitor_sample in clone.monitoring.rows:
         if monitor_sample.cluster_name is not None:
             monitor_sample.cluster_name = mapper.pseudonym_for(CATEGORY_CLUSTER, monitor_sample.cluster_name)
+
+    for monitor_daily_sample in clone.monitor_daily.rows:
+        if monitor_daily_sample.cluster_name is not None:
+            monitor_daily_sample.cluster_name = mapper.pseudonym_for(
+                CATEGORY_CLUSTER, monitor_daily_sample.cluster_name
+            )
 
     for storage_sample in clone.storage.rows:
         if storage_sample.cluster_name is not None:
@@ -151,5 +185,13 @@ def anonymize_snapshot(snapshot: Snapshot) -> AnonymizationResult:
     for usage_sample in clone.usage.rows:
         if usage_sample.cluster_name is not None:
             usage_sample.cluster_name = mapper.pseudonym_for(CATEGORY_CLUSTER, usage_sample.cluster_name)
+
+    for system_event in clone.system_events.rows:
+        if system_event.cluster_name is not None:
+            system_event.cluster_name = mapper.pseudonym_for(CATEGORY_CLUSTER, system_event.cluster_name)
+
+    for conflict in clone.transaction_conflicts.rows:
+        if conflict.conflict_objects is not None:
+            conflict.conflict_objects = mapper.pseudonym_for(CATEGORY_TABLE, conflict.conflict_objects)
 
     return AnonymizationResult(snapshot=clone, mapping=mapper.mapping())

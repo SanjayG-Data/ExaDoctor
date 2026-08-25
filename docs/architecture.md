@@ -99,7 +99,7 @@ src/exadoctor/
                  plus orchestrator.collect_all() running them all
   models/        Snapshot, Finding/Evidence, DatabaseInfo -- the only
                  objects rules/reports ever read
-  rules/         DiagnosticRule interface, RulePolicy, the 8 public-core rules
+  rules/         DiagnosticRule interface, RulePolicy, the 15 public-core rules
   profile/       QueryProfile model, its collector, and the deep per-query rules
   report/        terminal/HTML renderers (scan) and the query text renderer
   anonymizer/    Snapshot -> pseudonymized Snapshot (Milestone 16)

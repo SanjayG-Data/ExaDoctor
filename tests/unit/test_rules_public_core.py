@@ -502,6 +502,18 @@ def test_resource_trend_not_evaluated_when_unavailable():
     assert findings[0].status == FindingStatus.NOT_EVALUATED
 
 
+def test_resource_trend_not_evaluated_across_multiple_clusters():
+    from exadoctor.collectors.models import CollectionResult
+
+    n = DEFAULT_POLICY.min_samples_for_class_statistics
+    rows = [monitor_daily_sample(DB_TIME - timedelta(days=n - i)) for i in range(n)]
+    rows.append(monitor_daily_sample(DB_TIME, cluster_name="SECONDARY"))
+    snapshot = make_snapshot(monitor_daily=CollectionResult("EXA_MONITOR_DAILY", "PUBLIC", True, None, rows))
+    findings = evaluate_resource_trend(snapshot, DEFAULT_POLICY)
+    assert findings[0].status == FindingStatus.NOT_EVALUATED
+    assert "cluster" in findings[0].summary.lower()
+
+
 def test_resource_trend_not_evaluated_with_too_few_days():
     from exadoctor.collectors.models import CollectionResult
 
@@ -590,6 +602,26 @@ def test_resource_trend_reports_multiple_metrics_independently():
     assert len(warnings) == 2
 
 
+def test_resource_trend_cpu_boundary_survives_float_rounding():
+    """Regression test for the IEEE-754 float-subtraction bug already found
+    and fixed twice elsewhere in this file (SQL-SLOW-001/SQL-TEMP-001) --
+    independent code review found it had reappeared here, before
+    `_is_trending_up`'s rounding existed. `16.2 - 0.1 == 16.099999999999998`
+    in raw float arithmetic, which fails a `>= 16.1` floor check without
+    rounding but should pass it."""
+    from dataclasses import replace as dc_replace
+
+    from exadoctor.collectors.models import CollectionResult
+
+    policy = dc_replace(DEFAULT_POLICY, resource_trend_min_absolute_cpu_percent=16.1)
+    n = DEFAULT_POLICY.min_samples_for_class_statistics
+    rows = [monitor_daily_sample(DB_TIME - timedelta(days=n - i), cpu_avg_percent=0.1) for i in range(n - 1)]
+    rows.append(monitor_daily_sample(DB_TIME, cpu_avg_percent=16.2))
+    snapshot = make_snapshot(monitor_daily=CollectionResult("EXA_MONITOR_DAILY", "PUBLIC", True, None, rows))
+    findings = evaluate_resource_trend(snapshot, policy)
+    assert any(f.status == FindingStatus.WARNING and "CPU" in f.title for f in findings)
+
+
 def test_resource_trend_compares_against_latest_day_not_an_older_spike():
     from exadoctor.collectors.models import CollectionResult
 
@@ -609,6 +641,24 @@ def test_storage_growth_not_evaluated_when_unavailable():
     snapshot = make_snapshot(storage=unavailable_storage())
     findings = evaluate_storage_growth(snapshot, DEFAULT_POLICY)
     assert findings[0].status == FindingStatus.NOT_EVALUATED
+
+
+def test_storage_growth_not_evaluated_across_multiple_clusters():
+    """Regression test for a correctness gap found by independent code
+    review: this rule aggregates purely by interval_start with no
+    CLUSTER_NAME partitioning, so rows from more than one cluster sharing
+    a day would otherwise be silently blended. Not observed live (every
+    tested instance is single-cluster) but a real gap on a genuine
+    multi-cluster deployment."""
+    from exadoctor.collectors.models import CollectionResult
+
+    n = DEFAULT_POLICY.min_samples_for_class_statistics
+    rows = [db_size_sample(DB_TIME - timedelta(days=n - i), storage_size_avg_gib=10.0) for i in range(n)]
+    rows.append(db_size_sample(DB_TIME, storage_size_avg_gib=10.0, cluster_name="SECONDARY"))
+    snapshot = make_snapshot(storage=CollectionResult("EXA_DB_SIZE_DAILY", "PUBLIC", True, None, rows))
+    findings = evaluate_storage_growth(snapshot, DEFAULT_POLICY)
+    assert findings[0].status == FindingStatus.NOT_EVALUATED
+    assert "multiple" in findings[0].summary.lower() or "cluster" in findings[0].summary.lower()
 
 
 def test_storage_growth_not_evaluated_with_too_few_days():
@@ -648,6 +698,17 @@ def test_ram_sizing_not_evaluated_when_storage_unavailable():
     snapshot = make_snapshot(storage=unavailable_storage())
     findings = evaluate_ram_sizing(snapshot, DEFAULT_POLICY)
     assert findings[0].status == FindingStatus.NOT_EVALUATED
+
+
+def test_ram_sizing_not_evaluated_across_multiple_clusters():
+    from exadoctor.collectors.models import CollectionResult
+
+    rows = [db_size_sample(DB_TIME, recommended_db_ram_size_avg_gib=2.0)]
+    rows.append(db_size_sample(DB_TIME, recommended_db_ram_size_avg_gib=2.0, cluster_name="SECONDARY"))
+    snapshot = make_snapshot(storage=CollectionResult("EXA_DB_SIZE_DAILY", "PUBLIC", True, None, rows))
+    findings = evaluate_ram_sizing(snapshot, DEFAULT_POLICY)
+    assert findings[0].status == FindingStatus.NOT_EVALUATED
+    assert "cluster" in findings[0].summary.lower()
 
 
 def test_ram_sizing_not_evaluated_when_no_row_has_the_value():
@@ -904,6 +965,18 @@ def test_sql_workload_trend_not_evaluated_when_unavailable():
     assert findings[0].status == FindingStatus.NOT_EVALUATED
 
 
+def test_sql_workload_trend_not_evaluated_across_multiple_clusters():
+    from exadoctor.collectors.models import CollectionResult
+
+    n = DEFAULT_POLICY.min_samples_for_class_statistics
+    rows = [sql_daily_sample(DB_TIME - timedelta(days=n - i)) for i in range(n)]
+    rows.append(sql_daily_sample(DB_TIME, cluster_name="SECONDARY"))
+    snapshot = make_snapshot(sql_daily=CollectionResult("EXA_SQL_DAILY", "PUBLIC", True, None, rows))
+    findings = evaluate_sql_workload_trend(snapshot, DEFAULT_POLICY)
+    assert findings[0].status == FindingStatus.NOT_EVALUATED
+    assert "cluster" in findings[0].summary.lower()
+
+
 def test_sql_workload_trend_not_evaluated_with_too_few_days():
     from exadoctor.collectors.models import CollectionResult
 
@@ -962,6 +1035,25 @@ def test_sql_workload_trend_ratio_alone_does_not_warn_on_a_trivial_absolute_diff
     snapshot = make_snapshot(sql_daily=CollectionResult("EXA_SQL_DAILY", "PUBLIC", True, None, rows))
     findings = evaluate_sql_workload_trend(snapshot, DEFAULT_POLICY)
     assert all(f.status == FindingStatus.PASS for f in findings)
+
+
+def test_sql_workload_trend_duration_metric_boundary_survives_float_rounding():
+    """Regression test for the same IEEE-754 float-subtraction bug as
+    `test_resource_trend_cpu_boundary_survives_float_rounding`, in this
+    rule's other caller of `_is_trending_up`. `1.126 - 0.002 ==
+    1.1239999999999999` in raw float arithmetic, which fails a `>= 1.124`
+    floor check without rounding but should pass it."""
+    from dataclasses import replace as dc_replace
+
+    from exadoctor.collectors.models import CollectionResult
+
+    policy = dc_replace(DEFAULT_POLICY, sql_workload_trend_min_absolute_duration_seconds=1.124)
+    n = DEFAULT_POLICY.min_samples_for_class_statistics
+    rows = [sql_daily_sample(DB_TIME - timedelta(days=n - i), count=1, duration_avg_seconds=0.002) for i in range(n - 1)]
+    rows.append(sql_daily_sample(DB_TIME, count=1, duration_avg_seconds=1.126))
+    snapshot = make_snapshot(sql_daily=CollectionResult("EXA_SQL_DAILY", "PUBLIC", True, None, rows))
+    findings = evaluate_sql_workload_trend(snapshot, policy)
+    assert any(f.status == FindingStatus.WARNING and "execution time" in f.title for f in findings)
 
 
 def test_sql_workload_trend_reports_multiple_metrics_independently():

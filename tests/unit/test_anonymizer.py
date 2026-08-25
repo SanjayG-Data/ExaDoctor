@@ -187,6 +187,101 @@ def test_anonymize_snapshot_leaves_numeric_and_timestamp_fields_untouched() -> N
     assert anonymized_session.consumer_group == original_session.consumer_group
 
 
+def test_anonymize_snapshot_covers_session_history() -> None:
+    """Regression test: session_history was added to Snapshot after the
+    anonymizer was written and was never wired in -- caught by independent
+    code review, live-verified to leak a real user_name/host/cluster_name
+    through `exadoctor scan --anonymize`."""
+    snapshot = _load_snapshot()
+    real_user = snapshot.session_history.rows[0].user_name
+    real_host = snapshot.session_history.rows[0].host
+    real_cluster = snapshot.session_history.rows[0].cluster_name
+
+    result = anonymize_snapshot(snapshot)
+    row = result.snapshot.session_history.rows[0]
+
+    assert row.user_name != real_user
+    assert row.host != real_host
+    assert row.cluster_name != real_cluster
+    assert result.mapping["user"][real_user] == row.user_name
+    assert result.mapping["host"][real_host] == row.host
+    assert result.mapping["cluster"][real_cluster] == row.cluster_name
+
+
+def test_anonymize_snapshot_covers_sql_daily_cluster_name() -> None:
+    snapshot = _load_snapshot()
+    real_cluster = snapshot.sql_daily.rows[0].cluster_name
+
+    result = anonymize_snapshot(snapshot)
+
+    assert result.snapshot.sql_daily.rows[0].cluster_name != real_cluster
+    assert result.mapping["cluster"][real_cluster] == result.snapshot.sql_daily.rows[0].cluster_name
+
+
+def test_anonymize_snapshot_covers_monitor_daily_cluster_name() -> None:
+    snapshot = _load_snapshot()
+    real_cluster = snapshot.monitor_daily.rows[0].cluster_name if snapshot.monitor_daily.rows else "MAIN"
+    if not snapshot.monitor_daily.rows:
+        from exadoctor.collectors.models import MonitorDailySample
+
+        snapshot.monitor_daily.rows.append(
+            MonitorDailySample(
+                cluster_name=real_cluster,
+                interval_start=snapshot.collection_time.replace(tzinfo=None),
+                cpu_avg_percent=1.0,
+                temp_db_ram_avg_mib=1.0,
+                net_avg_mib_per_sec=1.0,
+                swap_avg_mib_per_sec=0.0,
+            )
+        )
+
+    result = anonymize_snapshot(snapshot)
+
+    assert result.snapshot.monitor_daily.rows[0].cluster_name != real_cluster
+    assert result.mapping["cluster"][real_cluster] == result.snapshot.monitor_daily.rows[0].cluster_name
+
+
+def test_anonymize_snapshot_covers_system_events_cluster_name() -> None:
+    snapshot = _load_snapshot()
+    real_cluster = snapshot.system_events.rows[0].cluster_name
+
+    result = anonymize_snapshot(snapshot)
+
+    assert result.snapshot.system_events.rows[0].cluster_name != real_cluster
+    assert result.mapping["cluster"][real_cluster] == result.snapshot.system_events.rows[0].cluster_name
+
+
+def test_anonymize_snapshot_covers_transaction_conflict_objects() -> None:
+    snapshot = _load_snapshot()
+    real_objects = snapshot.transaction_conflicts.rows[0].conflict_objects
+
+    result = anonymize_snapshot(snapshot)
+    anonymized = result.snapshot.transaction_conflicts.rows[0].conflict_objects
+
+    assert anonymized != real_objects
+    assert result.mapping["table"][real_objects] == anonymized
+
+
+def test_anonymized_snapshot_json_contains_no_real_identity_values_across_all_sources() -> None:
+    """Same guarantee as the pre-existing all-sources check, extended to
+    the four Snapshot fields added after the anonymizer was first written."""
+    snapshot = _load_snapshot()
+    snapshot.session_history.rows[0].user_name = "JDOE_ACME_ADMIN"
+    snapshot.session_history.rows[0].host = "10.55.4.9"
+    snapshot.session_history.rows[0].cluster_name = "ACME_PROD_CLUSTER_EAST"
+    snapshot.sql_daily.rows[0].cluster_name = "ACME_PROD_CLUSTER_EAST"
+    snapshot.system_events.rows[0].cluster_name = "ACME_PROD_CLUSTER_EAST"
+    snapshot.transaction_conflicts.rows[0].conflict_objects = "ACME_SCHEMA.SENSITIVE_TABLE"
+
+    result = anonymize_snapshot(snapshot)
+    payload = json.dumps(result.snapshot.to_dict())
+
+    assert "JDOE_ACME_ADMIN" not in payload
+    assert "10.55.4.9" not in payload
+    assert "ACME_PROD_CLUSTER_EAST" not in payload
+    assert "ACME_SCHEMA.SENSITIVE_TABLE" not in payload
+
+
 def test_anonymize_snapshot_preserves_database_version_and_port() -> None:
     snapshot = _load_snapshot()
     result = anonymize_snapshot(snapshot)
