@@ -16,7 +16,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from exadoctor.collectors.models import SqlStatement
-from exadoctor.models.finding import Finding, FindingStatus
+from exadoctor.models.finding import Evidence, Finding, FindingStatus
 from exadoctor.profile.analyzer import QueryAnalysis
 from exadoctor.profile.models import QueryProfile, QueryProfilePart
 from exadoctor.report.query_text import render_query_text
@@ -180,6 +180,40 @@ def test_render_query_text_includes_ai_explanation_when_given() -> None:
     text = render_query_text(analysis, ai_explanation="This query looks fine.")
     assert "AI EXPLANATION" in text
     assert "This query looks fine." in text
+
+
+def test_render_query_text_never_shows_a_self_referential_drill_down_hint() -> None:
+    """render_findings_block's drill-down hint (added for `exadoctor scan`,
+    where it points a reader at a *different* command to run) is
+    suppressed here -- every finding in a query report is already about
+    the one session/statement named in this report's own header, so the
+    hint would just echo the command the reader already ran. Found and
+    fixed as a direct side effect of adding that hint to the scan report."""
+    finding_with_matching_evidence = Finding(
+        id="PERF-BOTTLENECK-001",
+        title="Dominant execution part",
+        category="query",
+        status=FindingStatus.WARNING,
+        summary="Part #1 dominates.",
+        evidence=[
+            Evidence(
+                source="EXA_DBA_PROFILE_LAST_DAY",
+                stability="PUBLIC",
+                metric="DURATION",
+                value=0.1,
+                unit="seconds",
+                timestamp=None,
+                session_id=42,
+                stmt_id=7,
+            )
+        ],
+    )
+    analysis = QueryAnalysis(
+        session_id=42, stmt_id=7, workload=None, workload_available=False,
+        profile=None, profile_available=False, findings=[finding_with_matching_evidence],
+    )
+    text = render_query_text(analysis)
+    assert "exadoctor query" not in text
 
 
 def test_render_query_text_omits_ai_section_when_not_given() -> None:

@@ -126,3 +126,29 @@ def test_render_scan_html_collapses_pass_findings_and_shows_others_in_full() -> 
     # Non-PASS findings render as full cards (not just inside the
     # collapsed pass-section list).
     assert 'class="finding status-warning"' in rendered
+
+
+def test_render_scan_html_shows_drill_down_for_evidence_with_session_and_stmt() -> None:
+    """Same fix/gap as the text renderer: evidence pointing at a specific
+    statement (e.g. SQL-SLOW-001) should surface the `exadoctor query`
+    command for it, not just leave the reader to find the ids in raw JSON."""
+    snapshot = _load_snapshot()
+    from exadoctor.models.finding import Evidence, Finding, FindingStatus
+
+    finding = Finding(
+        id="SQL-SLOW-001",
+        title="Duration outlier",
+        category="workload",
+        status=FindingStatus.WARNING,
+        summary="Outlier statement.",
+        evidence=[
+            Evidence(
+                source="EXA_SQL_LAST_DAY", stability="PUBLIC", metric="DURATION",
+                value=1.0, unit="seconds", timestamp=None, session_id=42, stmt_id=7,
+            )
+        ],
+    )
+    snapshot.findings.append(finding)
+    rendered = render_scan_html(snapshot)
+
+    assert "exadoctor query 42 7" in rendered

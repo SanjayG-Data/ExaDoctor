@@ -216,6 +216,12 @@ own monitoring) has pointed you at a `SESSION_ID`/`STMT_ID` worth
 investigating: its profile parts, dominant execution part, and any
 findings specific to that one statement.
 
+Findings that point at a specific statement (e.g. `SQL-SLOW-001`,
+`SQL-TEMP-001`) show the exact command to drill into it right in their
+evidence line: `evidence: DURATION=... [EXA_SQL_LAST_DAY] (drill in:
+exadoctor query <session_id> <stmt_id>)` -- copy those two numbers
+straight into the command below.
+
 ```
 $ exadoctor query 1874233022592647168 1
 EXADOCTOR QUERY ANALYSIS

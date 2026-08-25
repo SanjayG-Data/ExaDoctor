@@ -54,7 +54,7 @@ def render_query_text(analysis: QueryAnalysis, ai_explanation: str | None = None
             lines.append(f"  Total profiled duration: {total:.3f}s across {len(analysis.profile.parts)} part(s)")
     lines.append("")
 
-    lines.extend(render_findings_block(analysis.findings))
+    lines.extend(render_findings_block(analysis.findings, show_drill_down=False))
     lines.extend(render_ai_explanation_block(ai_explanation))
 
     return "\n".join(lines).rstrip() + "\n"

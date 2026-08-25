@@ -22,25 +22,47 @@ _STATUS_ORDER = [
 ]
 
 
-def render_finding_lines(finding: Finding) -> list[str]:
+def render_finding_lines(finding: Finding, show_drill_down: bool = True) -> list[str]:
     """Public: reused by other report renderers (e.g. the query analyzer's
-    text report) so finding formatting stays identical everywhere."""
+    text report) so finding formatting stays identical everywhere.
+
+    `show_drill_down=False` for the `exadoctor query` report specifically:
+    every finding there is already about the one session/statement named
+    in that report's own header, so repeating "exadoctor query <same ids>"
+    on every evidence line would just be a self-referential echo, not a
+    useful pointer to somewhere new (see `render_scan_text`, the only
+    other caller, which leaves this on).
+    """
     lines = [f"[{finding.status.value}] {finding.id} - {finding.title}", f"    {finding.summary}"]
     if finding.recommendation:
         lines.append(f"    recommendation: {finding.recommendation}")
     for evidence in finding.evidence:
         ts = f" at {evidence.timestamp.isoformat()}" if evidence.timestamp else ""
         unit = f" {evidence.unit}" if evidence.unit else ""
-        lines.append(f"    evidence: {evidence.metric}={evidence.value}{unit}{ts} [{evidence.source}]")
+        # session_id/stmt_id are recorded on evidence (e.g. SQL-SLOW-001,
+        # SQL-TEMP-001) precisely to identify the offending statement, but
+        # were never surfaced in the text report -- a user had no way to
+        # get from "here's a slow statement" to `exadoctor query`'s
+        # required SESSION_ID/STMT_ID arguments without switching to
+        # `--format json` and reading raw evidence fields by hand. Only
+        # shown when both are present, since `query` requires both (a
+        # session-only id, e.g. SESSION-LONG-001, isn't drillable this way).
+        drill_down = (
+            f" (drill in: exadoctor query {evidence.session_id} {evidence.stmt_id})"
+            if show_drill_down and evidence.session_id is not None and evidence.stmt_id is not None
+            else ""
+        )
+        lines.append(f"    evidence: {evidence.metric}={evidence.value}{unit}{ts} [{evidence.source}]{drill_down}")
     for limitation in finding.limitations:
         lines.append(f"    limitation: {limitation}")
     return lines
 
 
-def render_findings_block(findings: list[Finding]) -> list[str]:
+def render_findings_block(findings: list[Finding], show_drill_down: bool = True) -> list[str]:
     """Public: the "FINDINGS (...)" section (count summary, collapsed PASS
     list, full detail for everything else) shared by any text report that
-    shows a list of Findings."""
+    shows a list of Findings. `show_drill_down` is forwarded to
+    `render_finding_lines` -- see its docstring."""
     lines: list[str] = []
     counts = {status: 0 for status in FindingStatus}
     for finding in findings:
@@ -57,7 +79,7 @@ def render_findings_block(findings: list[Finding]) -> list[str]:
     for status in _STATUS_ORDER:
         for finding in findings:
             if finding.status == status:
-                lines.extend(render_finding_lines(finding))
+                lines.extend(render_finding_lines(finding, show_drill_down=show_drill_down))
                 lines.append("")
 
     return lines

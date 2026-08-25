@@ -12,14 +12,28 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from exadoctor.models.finding import Evidence, Finding, FindingStatus
 from exadoctor.models.snapshot import Snapshot
-from exadoctor.report.terminal import render_ai_explanation_block, render_scan_text
+from exadoctor.report.terminal import render_ai_explanation_block, render_finding_lines, render_scan_text
 
 FIXTURE_PATH = Path(__file__).parent.parent / "golden" / "sample_snapshot.json"
 
 
 def _load_snapshot() -> Snapshot:
     return Snapshot.from_dict(json.loads(FIXTURE_PATH.read_text()))
+
+
+def _finding_with_evidence(**evidence_kwargs) -> Finding:
+    defaults = dict(source="EXA_SQL_LAST_DAY", stability="PUBLIC", metric="DURATION", value=1.0, unit="seconds", timestamp=None)
+    defaults.update(evidence_kwargs)
+    return Finding(
+        id="SQL-SLOW-001",
+        title="Duration outlier",
+        category="workload",
+        status=FindingStatus.WARNING,
+        summary="Outlier statement.",
+        evidence=[Evidence(**defaults)],
+    )
 
 
 def test_render_scan_text_runs_without_crashing_and_includes_key_data() -> None:
@@ -51,6 +65,34 @@ def test_render_scan_text_with_ai_explanation_shows_a_clearly_separated_section(
     ai_index = text.index("AI EXPLANATION")
     assert ai_index > findings_index
     assert "cannot change severity" in text
+
+
+def test_render_finding_lines_shows_drill_down_when_session_and_stmt_present() -> None:
+    """A user reading a WARNING about a specific statement had no way to
+    get from the text report to `exadoctor query`'s required SESSION_ID/
+    STMT_ID arguments without switching to --format json -- found via a
+    real user asking exactly this question. This is the fix."""
+    finding = _finding_with_evidence(session_id=42, stmt_id=7)
+    lines = render_finding_lines(finding)
+    evidence_line = next(line for line in lines if line.strip().startswith("evidence:"))
+    assert "exadoctor query 42 7" in evidence_line
+
+
+def test_render_finding_lines_omits_drill_down_when_stmt_id_missing() -> None:
+    """SESSION-LONG-001-style evidence carries a session_id but no
+    stmt_id (it's not about one statement) -- `exadoctor query` requires
+    both, so no drill-down hint should be shown for a session-only id."""
+    finding = _finding_with_evidence(session_id=42, stmt_id=None, metric="SESSION_AGE")
+    lines = render_finding_lines(finding)
+    evidence_line = next(line for line in lines if line.strip().startswith("evidence:"))
+    assert "exadoctor query" not in evidence_line
+
+
+def test_render_finding_lines_can_suppress_drill_down() -> None:
+    finding = _finding_with_evidence(session_id=42, stmt_id=7)
+    lines = render_finding_lines(finding, show_drill_down=False)
+    evidence_line = next(line for line in lines if line.strip().startswith("evidence:"))
+    assert "exadoctor query" not in evidence_line
 
 
 def test_render_ai_explanation_block_empty_for_none_or_blank() -> None:

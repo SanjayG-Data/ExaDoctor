@@ -71,11 +71,19 @@ def _render_evidence(evidence: Evidence) -> str:
     ts = f" at {_esc(evidence.timestamp.isoformat())}" if evidence.timestamp else ""
     unit = f" {_esc(evidence.unit)}" if evidence.unit else ""
     context = f" &mdash; {_esc(evidence.context)}" if evidence.context else ""
+    # Same gap/fix as the text renderer's render_finding_lines: surface
+    # the exadoctor query command for this evidence's statement, when both
+    # ids are present, so a user isn't stuck reading raw JSON to find them.
+    drill_down = (
+        f" <code>exadoctor query {_esc(evidence.session_id)} {_esc(evidence.stmt_id)}</code>"
+        if evidence.session_id is not None and evidence.stmt_id is not None
+        else ""
+    )
     return (
         "<li><code>"
         f"{_esc(evidence.metric)}={_esc(evidence.value)}{unit}"
         "</code>"
-        f"{ts} <span class=\"evidence-source\">[{_esc(evidence.source)}]</span>{context}</li>"
+        f"{ts} <span class=\"evidence-source\">[{_esc(evidence.source)}]</span>{context}{drill_down}</li>"
     )
 
 
