@@ -35,8 +35,10 @@
 #   EXADOCTOR_DRY_RUN=1    print the plan and the resolved uv command,
 #                          install nothing
 #
-# Windows (PowerShell): run `uv tool install` directly (see README.md) --
-# there is no install.ps1 yet.
+# Windows (PowerShell): this script needs `sh`, which native PowerShell
+# doesn't have -- use install.ps1 instead:
+#   irm https://raw.githubusercontent.com/SanjayG-Data/ExaDoctor/main/install.ps1 | iex
+# (Git Bash/WSL users can still run this script as-is.)
 
 set -u
 

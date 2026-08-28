@@ -13,6 +13,11 @@
 [![Database access: read-only](https://img.shields.io/badge/database%20access-read--only-brightgreen)](docs/security.md)
 [![For Exasol](https://img.shields.io/badge/for-Exasol-1a1a1a)](https://www.exasol.com/)
 
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/SanjayG-Data/ExaDoctor/main/install.ps1 | iex
+```
+**macOS / Linux / Git Bash / WSL:**
 ```sh
 curl -fsSL https://raw.githubusercontent.com/SanjayG-Data/ExaDoctor/main/install.sh | sh
 ```
@@ -35,6 +40,23 @@ needs isn't available, it says so instead of guessing.
 
 ## Quick start
 
+**Windows (PowerShell)** — most Windows users land here by default, so this is the primary path, not a fallback:
+
+```powershell
+# 1. install
+irm https://raw.githubusercontent.com/SanjayG-Data/ExaDoctor/main/install.ps1 | iex
+
+# 2. point it at your database
+$env:EXADOCTOR_HOST = "localhost"
+$env:EXADOCTOR_USER = "sys"
+$env:EXADOCTOR_PASSWORD = "..."
+
+# 3. run it
+exadoctor scan
+```
+
+**macOS / Linux / Git Bash / WSL:**
+
 ```sh
 # 1. install
 curl -fsSL https://raw.githubusercontent.com/SanjayG-Data/ExaDoctor/main/install.sh | sh
@@ -48,8 +70,8 @@ export EXADOCTOR_PASSWORD=...
 exadoctor scan
 ```
 
-*(Windows PowerShell? `export` won't work there — see
-[Configure](#configure) below for the `$env:` equivalent.)*
+*(`install.sh` needs a POSIX shell — it will not run in native PowerShell,
+since PowerShell has no `sh`. Use `install.ps1` above there instead.)*
 
 ### Requirements
 
@@ -73,11 +95,8 @@ Every release bumps the version number specifically so this works —
 verified live: `uv` compares the resolved version, not just git history,
 so a version-less git-branch install can report "Nothing to upgrade"
 even with a newer commit sitting on the branch. Re-running the install
-command works too and is equivalent:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/SanjayG-Data/ExaDoctor/main/install.sh | sh
-```
+command works too and is equivalent (`install.ps1`/`install.sh`, same
+choice as in [Quick start](#quick-start)).
 
 ## All commands
 
@@ -115,20 +134,20 @@ Connection settings are environment variables only — never CLI flags
 | `EXADOCTOR_LLM_PROVIDER` | no | `none` | Set to `local` to enable `--explain` |
 | `EXADOCTOR_LLM_BASE_URL` | no | `http://localhost:8080` | Local LLM server (OpenAI-compatible `/v1/chat/completions`, e.g. a llama.cpp server) |
 
-**Setting these — macOS/Linux/WSL (bash/zsh):**
-
-```sh
-export EXADOCTOR_HOST=localhost
-export EXADOCTOR_USER=sys
-export EXADOCTOR_PASSWORD=...
-```
-
-**Windows (PowerShell)** — `export` doesn't exist there; use `$env:` instead:
+**Setting these — Windows (PowerShell):**
 
 ```powershell
 $env:EXADOCTOR_HOST = "localhost"
 $env:EXADOCTOR_USER = "sys"
 $env:EXADOCTOR_PASSWORD = "..."
+```
+
+**macOS/Linux/WSL (bash/zsh)** — PowerShell's `$env:` doesn't exist there; use `export` instead:
+
+```sh
+export EXADOCTOR_HOST=localhost
+export EXADOCTOR_USER=sys
+export EXADOCTOR_PASSWORD=...
 ```
 
 Either way, these only last for the current terminal session — set them
