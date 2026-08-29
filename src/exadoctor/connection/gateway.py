@@ -203,7 +203,20 @@ class ReadOnlyGateway:
                     fetch_mapper=pyexasol.exasol_mapper,
                     websocket_sslopt=sslopt,
                 )
-        except pyexasol.ExaError as exc:
+        except (pyexasol.ExaError, ValueError, OSError) as exc:
+            # pyexasol doesn't wrap every failure as ExaError -- an
+            # over-long host label (>63 chars) fails IDNA encoding deep in
+            # the stdlib socket module as a plain UnicodeError (itself a
+            # ValueError subclass) before pyexasol's own connection logic
+            # ever runs, and an over-long password (beyond the RSA-2048/
+            # PKCS1 plaintext limit) fails pyexasol's own password
+            # encryption step with a plain ValueError, not an ExaError.
+            # Both surfaced as an unhandled traceback before this was
+            # widened -- found by independent QA. OSError is included for
+            # the same reason (e.g. a raw socket.gaierror reaching here
+            # uncaught): any failure while establishing a connection
+            # belongs to the user as a clear "could not connect" message,
+            # never a stack trace.
             raise ConnectionFailedError(
                 f"Could not connect to Exasol at {self._config.host}:{self._config.port} "
                 f"as user {self._config.user!r}: {exc.__class__.__name__}: {exc}"

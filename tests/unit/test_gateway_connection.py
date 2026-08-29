@@ -49,6 +49,42 @@ def test_execute_without_connect_raises_actionable_error() -> None:
         gateway.execute("SELECT 1")
 
 
+def test_connect_wraps_a_plain_unicodeerror_as_connectionfailederror(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression guard for a gap independent QA found: a host whose
+    first DNS label exceeds 63 characters fails IDNA encoding deep in the
+    stdlib socket module -- a plain `UnicodeError` (an ValueError
+    subclass), raised before pyexasol's own connection logic ever gets a
+    chance to wrap it as an `ExaError`. Reproduced live against a real
+    over-long hostname before this fix; here, faked directly for a fast,
+    deterministic unit test of the same exception class."""
+
+    def fake_connect(**kwargs: object) -> None:
+        raise UnicodeError("label empty or too long")
+
+    monkeypatch.setattr(pyexasol, "connect", fake_connect)
+
+    gateway = ReadOnlyGateway(CONFIG)
+    with pytest.raises(ConnectionFailedError, match="UnicodeError"):
+        gateway.connect()
+
+
+def test_connect_wraps_a_plain_valueerror_as_connectionfailederror(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression guard for a gap independent QA found: a password
+    longer than pyexasol's RSA-2048/PKCS1 plaintext limit (~214 bytes)
+    fails pyexasol's own password-encryption step with a plain
+    `ValueError`, not an `ExaError` -- reproduced live against a real
+    250-character password before this fix."""
+
+    def fake_connect(**kwargs: object) -> None:
+        raise ValueError("Encryption failed")
+
+    monkeypatch.setattr(pyexasol, "connect", fake_connect)
+
+    gateway = ReadOnlyGateway(CONFIG)
+    with pytest.raises(ConnectionFailedError, match="ValueError"):
+        gateway.connect()
+
+
 def test_connect_suppresses_pyexasol_default_cert_warning(monkeypatch: pytest.MonkeyPatch) -> None:
     # Flagged by two independent review rounds: pyexasol emits a
     # PyexasolWarning on every encrypted connection made without a
